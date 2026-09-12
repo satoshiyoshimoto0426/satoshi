@@ -1,0 +1,53 @@
+# =============================================================================
+# 配信チャネル定義(詳細設計書 §4.1 / 要件定義書 §4)
+#
+# 1 チャネル = LINE 公式アカウント 1 つ。3 つ目以降を追加する場合も、このファイルに
+# 1 ブロック追記して config/sources/*.yaml の channels から参照するだけでよい(NFR-09)。
+#
+# lineTokenSecret は Secret Manager の「リソース名」であってトークンそのものではない。
+# トークン・API キーの値は絶対にこのファイルへ書かないこと(NFR-03)。
+# ${GCP_PROJECT_ID} は設定読込時に環境変数へ展開される(src/config/load.ts)。
+# ローカル実行では環境変数 LINE_TOKEN_<ID大文字>(例: LINE_TOKEN_AI_RESKILL)が
+# 優先されるため、Secret Manager を用意しなくても動く(src/context.ts)。
+#
+# deliverAt は Cloud Scheduler の設定と突き合わせるための「記録値」であり、
+# この値を変えても起動時刻は変わらない(infra/terraform 側も併せて変更すること)。
+# =============================================================================
+channels:
+  - id: ai_reskill
+    name: AIリスキリング制度情報局
+    lineTokenSecret: 'projects/${GCP_PROJECT_ID}/secrets/line-token-ai-reskill/versions/latest'
+    # 要件定義書 §4「対象領域」をそのまま反映する。AI の分類・要約プロンプトに渡るため、
+    # 表記は受信者が使う言葉(制度の正式名称)に寄せている。
+    topics: >-
+      人材開発支援助成金、
+      教育訓練給付制度(一般教育訓練給付金・特定一般教育訓練給付金・専門実践教育訓練給付金)、
+      リスキリング関連の予算・施策(人への投資、リスキリングを通じたキャリアアップ支援事業)、
+      AI事業者ガイドライン、AI関連法制・AI制度(AI戦略会議・AI制度研究会の議論を含む)、
+      デジタル人材育成施策、中小企業向けの人材育成・DX関連の補助金・支援策
+    relevanceThreshold: 0.6
+    maxItems: 7
+    minItems: 3
+    maxChars: 1500
+    # 0 件の日も「新着なし」を配信する(FR-11 の決定事項)。
+    # 受信者が「届かない = システム障害」と判別できるようにするため、false にしないこと。
+    sendWhenEmpty: true
+    deliverAt: '07:30'
+    # 初期リリースは自動配信(要件定義書 §2.2)。承認運用に切り替える場合のみ true。
+    requireApproval: false
+
+  - id: welfare
+    name: 就労支援、放課後デイ情報局
+    lineTokenSecret: 'projects/${GCP_PROJECT_ID}/secrets/line-token-welfare/versions/latest'
+    topics: >-
+      障害福祉サービス等報酬改定、指定基準・運営基準(人員・設備・運営)、
+      就労移行支援、就労継続支援A型・B型、就労選択支援、児童発達支援、
+      放課後等デイサービスのガイドライン、障害者総合支援法・児童福祉法の改正、
+      障害児支援・こども家庭庁の通知、自治体が発出する事業者向け通知(重要度の高いもの)
+    relevanceThreshold: 0.6
+    maxItems: 7
+    minItems: 3
+    maxChars: 1500
+    sendWhenEmpty: true
+    deliverAt: '07:30'
+    requireApproval: false

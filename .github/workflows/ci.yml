@@ -1,0 +1,86 @@
+# CI: 変更のたびに「壊れていないこと」を機械的に確かめる。
+# 完了条件(タスク管理書 M0-04)は pnpm test と pnpm lint が CI で通ること。
+# config/ の YAML 検証まで含めるのは、設定ミスは型検査では捕まらず
+# 本番の朝の配信で初めて露見するため(要件定義書 NFR-05 / NFR-01)。
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# 同じ参照への連続 push では古い実行を打ち切る(実行時間の無駄を減らす)。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 既定を読み取り専用にする(最小権限。NFR-03)。
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: lint / typecheck / test / build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v4
+
+      # pnpm のバージョンは package.json の packageManager フィールドから解決させる
+      # (ここで version を書くと二重管理になり、ローカルと CI がずれる)。
+      - name: pnpm を用意
+        uses: pnpm/action-setup@v4
+
+      # setup-node は pnpm を用意した後に置く。cache: pnpm が pnpm store path を問い合わせるため。
+      - name: Node 22 を用意(pnpm ストアをキャッシュ)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: 依存をインストール
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: 型チェック
+        run: pnpm typecheck
+
+      - name: テスト
+        run: pnpm test
+
+      - name: ビルド
+        run: pnpm build
+
+      # YAML の構文崩れ・スキーマ違反・チャネル参照の不整合をここで落とす。
+      # 外部送信や実ストア接続をしないよう、このステップだけ dry-run + メモリストアにする。
+      - name: 設定ファイル検証
+        run: pnpm cli validate-config
+        env:
+          DRY_RUN: 'true'
+          STORE_KIND: memory
+
+  docker:
+    name: Docker イメージのビルド確認
+    # push のみ。Dockerfile が壊れていないことの確認が目的で、
+    # PR ごとに毎回回すには重い(依存の完全インストールを 2 回行うため)。
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v4
+
+      - name: Buildx を用意
+        uses: docker/setup-buildx-action@v3
+
+      # レジストリへは push しない(認証情報を CI に持たせない。配布は別途リリース手順で行う)。
+      - name: イメージをビルド(プッシュはしない)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: seido-watch:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

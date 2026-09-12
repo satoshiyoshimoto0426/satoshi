@@ -1,0 +1,23 @@
+# terraform.tfvars のひな形。
+#   cp terraform.tfvars.example terraform.tfvars
+# して値を埋める。terraform.tfvars は .gitignore 済み(コミットしないこと)。
+#
+# ここにシークレットの「値」は書かない。LINE トークン / Anthropic API キー / Slack Webhook URL は
+# Secret Manager に gcloud で投入する(README.md「3. シークレット値の投入」)。
+
+# 必須: デプロイ先プロジェクト ID
+project_id = "seido-watch-prod"
+
+# 必須: ジョブが使うコンテナイメージ。README.md「2. イメージのビルドと push」で push したもの。
+# 再現性のため、運用ではタグではなくダイジェスト(@sha256:...)を推奨。
+image = "asia-northeast1-docker.pkg.dev/seido-watch-prod/seido-watch/seido-watch:2026-09-12"
+
+# 任意: 既定値のままでよい場合は省略可
+# region             = "asia-northeast1"
+# firestore_location = "asia-northeast1"
+
+# 任意: アラートの通知先(Slack / メール)。未設定ならポリシーは作られるが通知は飛ばない。
+# 作成方法は README.md「5. 通知チャネルの作成」を参照。
+# notification_channel_ids = [
+#   "projects/seido-watch-prod/notificationChannels/1234567890123456789",
+# ]

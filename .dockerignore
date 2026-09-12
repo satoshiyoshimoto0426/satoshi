@@ -1,0 +1,33 @@
+# ビルドコンテキストから外すもの。
+# 目的は (1) 秘密情報をイメージに混入させない (2) 無関係な変更でキャッシュを壊さない (3) 転送量削減。
+
+# 秘密情報。.env* は絶対にイメージへ入れない(NFR-03)。
+.env
+.env.*
+
+# ホスト側の依存・成果物。イメージ内で作り直すので混ぜない
+# (プラットフォーム依存のバイナリを持ち込むと実行時に壊れる)。
+node_modules
+dist
+coverage
+
+# バージョン管理と CI の設定。実行イメージには不要。
+.git
+.gitignore
+.github
+.dockerignore
+Dockerfile
+
+# 実行時に使わないもの。
+test
+docs
+infra
+README.md
+*.log
+.DS_Store
+
+# 開発ツール設定(lint / format / test はイメージ内では実行しない)。
+eslint.config.js
+vitest.config.ts
+.prettierrc.json
+.prettierignore

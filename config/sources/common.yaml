@@ -1,0 +1,126 @@
+# =============================================================================
+# 共通ソース(要件定義書 §5.1 / 詳細設計書 §4.2)
+# id 接頭辞: common_
+#
+# !!! 重要 !!!
+# 本ファイルの URL と CSS セレクタは未検証である。
+# 本番投入前に必ず `pnpm cli verify-sources --fix` を実行し、
+#   (1) URL への到達確認(HTTP ステータス)
+#   (2) HTML ソースのセレクタ検証(候補リンクが 1 件以上取れるか)
+# を行い、NG のものを修正すること。到達するがセレクタが合っていない状態
+# (= 巡回しているのに永久に 0 件)が最も気づきにくい故障なので、
+# 「OK が出た」ではなく「候補が取れた」ところまで確認する。
+#
+# 方針(詳細設計書 §14):
+# - 官公庁ページは年度ごとに URL が変わるため、個別記事ではなく「新着一覧 / 部局トップ」を監視する。
+# - itemSelector は広めに取り、includeUrlPatterns で当該サイト配下のリンクだけに絞る。
+#   これでセレクタが多少ずれてもノイズを拾いにくい。
+# - excludeUrlPatterns では SNS・スタイルシート・ページ内アンカーを落とす。
+#   '#' を除外しているのは、同一ページ内リンクが新着として大量に誤検知されるのを防ぐため。
+# =============================================================================
+sources:
+  # ---------------------------------------------------------------------------
+  # 法令そのものの改正を検知する。両領域の根拠法(障害者総合支援法・児童福祉法・
+  # 雇用保険法など)の公布はここで拾うのが最も確実。
+  # 要検証: e-Gov 法令 API v2 のエンドポイント。API 仕様が変わっていたら endpoint を差し替えること。
+  #         (v2 が廃止されている場合は https://laws.e-gov.go.jp/api/1/... 系を確認する)
+  # ---------------------------------------------------------------------------
+  - id: common_egov_laws
+    name: e-Gov 法令検索(法令改正 API)
+    type: egov
+    channels: [ai_reskill, welfare]
+    priority: high
+    region: null
+    enabled: true
+    egov:
+      # lookbackDays は巡回間隔(1 日 4 回)より十分長く取る。
+      # 1 日分だと巡回が半日止まっただけで取りこぼすため 3 日にしている。
+      endpoint: https://laws.e-gov.go.jp/api/2/law_revisions
+      lookbackDays: 3
+    note: 障害者総合支援法・児童福祉法・雇用保険法など両領域の根拠法令の改正公布を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 省令・告示改正は必ずパブコメを経るため、「改正の予告」を最も早く掴めるソース。
+  # 要検証: 一覧ページの URL と itemSelector を verify-sources で確認すること。
+  #         RSS が提供されていることが確認できたら type: rss + その URL に切り替えるほうが堅い。
+  #         itemSelector の代替候補: '#contents a' / '.p-list a' / 'table a'
+  # ---------------------------------------------------------------------------
+  - id: common_egov_public_comment
+    name: e-Gov パブリックコメント 意見募集中の案件
+    type: html
+    url: https://public-comment.e-gov.go.jp/
+    channels: [ai_reskill, welfare]
+    priority: high
+    region: null
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['public-comment.e-gov.go.jp/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 省令・告示・基準改正の「意見募集(パブコメ)」開始を検知し、改正を事前に掴む。
+
+  # ---------------------------------------------------------------------------
+  # 公布日の確定に使う。報酬改定・基準省令の施行日は官報の公布日が基準になる。
+  # 要検証: 2025 年の官報電子化に伴い公式サイトが変わっている可能性がある。
+  #         到達しない場合は国立印刷局のインターネット版官報 https://kanpou.npb.go.jp/ を試すこと。
+  #         itemSelector の代替候補: '#contents a' / '.list a'
+  # ---------------------------------------------------------------------------
+  - id: common_kanpou
+    name: インターネット版官報
+    type: html
+    url: https://www.kanpou.go.jp/
+    channels: [ai_reskill, welfare]
+    priority: medium
+    region: null
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['kanpou.go.jp/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 法律・政令・省令の公布(= 施行日の確定)を官報掲載で検知する。
+
+  # ---------------------------------------------------------------------------
+  # 閣議決定・総理指示など、省庁の通知より上流の政府方針を掴む。
+  # 両領域とも「骨太の方針」「経済対策」で制度変更の方向が先に出るため両チャネルに紐付ける。
+  # 要検証: itemSelector。代替候補: '#contents a' / '.news a'
+  # ---------------------------------------------------------------------------
+  - id: common_kantei_news
+    name: 首相官邸 新着情報
+    type: html
+    url: https://www.kantei.go.jp/jp/
+    channels: [ai_reskill, welfare]
+    priority: medium
+    region: null
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['kantei.go.jp/jp/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 閣議決定・経済対策・骨太の方針など、制度改正の上流にある政府方針を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 内閣官房は「新しい資本主義(人への投資・リスキリング)」が中心テーマで、
+  # 障害福祉サービスの報酬・基準にはほぼ関わらないため ai_reskill のみに紐付ける。
+  # 要検証: itemSelector。代替候補: '#contents a' / '.contents a'
+  # ---------------------------------------------------------------------------
+  - id: common_cas_news
+    name: 内閣官房 新着情報(新しい資本主義・人への投資 等)
+    type: html
+    url: https://www.cas.go.jp/jp/
+    channels: [ai_reskill]
+    priority: medium
+    region: null
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['cas.go.jp/jp/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 新しい資本主義実現会議など、リスキリング関連予算・施策の方針決定を検知する。

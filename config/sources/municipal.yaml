@@ -1,0 +1,744 @@
+# =============================================================================
+# 自治体ソース(要件定義書 §5.4 / 詳細設計書 §4.2・§14)
+# id 接頭辞: mu_
+#
+# !!! 重要: 本ファイルの URL と CSS セレクタは未検証である !!!
+# 本番投入前に必ず `pnpm cli verify-sources --fix` を実行し、
+#   (1) URL への到達確認(HTTP ステータス)
+#   (2) HTML ソースのセレクタ検証(候補リンクが 1 件以上取れるか)
+# を行い、NG のものを修正すること。
+# 自治体サイトは省庁サイト以上に CMS・URL 体系がばらばらで、組織改編のたびに
+# ディレクトリごと移動する(例: 東京都は 2023 年度の福祉保健局分割で
+# fukushihoken.metro.tokyo.lg.jp → fukushi.metro.tokyo.lg.jp へ移った)。
+# 「到達はするが候補 0 件」= セレクタ不一致 は、巡回しているのに永久に新着が出ない
+# という最も気づきにくい故障なので、「OK が出た」ではなく「候補が取れた」ところまで
+# 必ず確認すること。各ブロックの `# 要検証:` に代替 URL / 代替セレクタ候補を書いてある。
+#
+# -----------------------------------------------------------------------------
+# 収録範囲(初期リリース = タスク管理書 M1-09)
+# -----------------------------------------------------------------------------
+# 都府県庁 7:東京都・神奈川県・愛知県・京都府・大阪府・兵庫県・福岡県
+# 市 12:横浜市・川崎市・相模原市・横須賀市(神奈川)、名古屋市(愛知)、京都市(京都)、
+#        大阪市・堺市(大阪)、神戸市(兵庫)、福岡市・北九州市(福岡)、八王子市(東京)
+#
+# 【12 市の内訳についての判断(明記)】
+# 要件定義書 §5.4 の表に載る政令指定都市は、横浜市・川崎市・相模原市(神奈川)、
+# 名古屋市(愛知)、京都市(京都)、大阪市・堺市(大阪)、神戸市(兵庫)、
+# 福岡市・北九州市(福岡)の 10 市しかない。一方 §5.4 の本文は「政令指定都市 12 市を
+# 先行登録」と書いている。この差分 2 市を埋めるため、本ファイルでは
+# **八王子市(東京・中核市)と横須賀市(神奈川・中核市)** を加えて 12 市とした。
+# 理由: この 2 市は中核市として障害福祉サービス事業者の指定・指導権限を自ら持ち、
+#       独自の事業者向け通知を発出する点で政令市と実質的に同じ扱いが必要であり、
+#       かつ §5.4 の表でも各都県の筆頭に挙げられているため。
+# さいたま市は §5.4 の対象 7 都府県(埼玉県を含まない)に属さないため対象外。
+# 残りの中核市は M3-09 で追加する(ファイル末尾の一覧を参照)。
+#
+# -----------------------------------------------------------------------------
+# 共通方針
+# -----------------------------------------------------------------------------
+# - channels は全て [welfare] のみ(要件定義書 §5.4 の決定)。
+# - region は必ず都府県名を入れる(FR-18)。市のソースは「大阪府(大阪市)」のように
+#   所属都府県名 + 市名を併記する。まとめで「対象: 大阪府内事業所」と出すため、
+#   先頭が都府県名になる並びを崩さないこと。
+# - priority は都府県庁・政令市とも medium。国の通知(welfare.yaml の high)より
+#   優先度を下げているのは、自治体ページは国通知の転載が多く、
+#   重複排除(要件定義書 §5.4)で国側を優先する運用のため。
+# - type は全て html。自治体サイトで RSS を安定提供している例はほぼ無い。
+# - itemSelector は特定サイトの DOM に強く依存するため、汎用的で壊れにくいものを 1 つ選ぶ。
+#   既定は 'main a'(近年の自治体 CMS はほぼ <main> を持つ)。
+#   代替候補は各ブロックのコメントに '#contents a' / '#tmp_contents a' / '.news-list a' を挙げてある。
+# - セレクタが広い分は includeUrlPatterns で「その自治体ドメイン配下の該当ディレクトリ」に絞って
+#   ノイズを抑える。添付 PDF の置き場ディレクトリも include に含めている
+#   (自治体の通知本体は PDF で出ることが非常に多く、これを落とすと中身が取れないため)。
+# - excludeUrlPatterns は全ソース共通:
+#     'javascript:', 'mailto:', '.css', '#', '.pdf#',
+#     'twitter.com', 'facebook.com', 'line.me', 'youtube.com', 'instagram.com'
+#   '.pdf' 全体は除外しない。PDF 本体は出典として有効だからである(FR-06)。
+#   '#' を入れているのは「このページの先頭へ」等のページ内アンカーが、
+#   ハッシュ除去後に一覧ページ自身と同じ URL になって偽の新着になるのを防ぐため。
+#   '#' があるため '.pdf#' は形式上は冗長だが、意図(同一 PDF の別ページ指定を
+#   重複登録しない)を残すために明示している。
+# - enabled は全て true。無効だと巡回されず verify-sources の検証対象にもならないため、
+#   「未検証だから false」にはしない。検証で NG だったものだけを --fix で自動的に false にする。
+# =============================================================================
+sources:
+  # ===========================================================================
+  # 都府県庁(7)
+  # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # 東京都 福祉局 障害者施策推進部。
+  # 要検証: URL。2023 年度の福祉保健局分割でドメインが
+  #         fukushihoken.metro.tokyo.lg.jp → fukushi.metro.tokyo.lg.jp に変わっている。
+  #         NG なら https://www.fukushi.metro.tokyo.lg.jp/ から
+  #         「障害者・障害児」→「事業者向け」を辿って差し替えること。
+  #         itemSelector 代替候補: '#contents a' / '.news-list a'
+  # ---------------------------------------------------------------------------
+  - id: mu_pref_tokyo
+    name: 東京都 福祉局 障害者施策推進部(事業者向け)
+    type: html
+    url: https://www.fukushi.metro.tokyo.lg.jp/shougai/
+    channels: [welfare]
+    priority: medium
+    region: 東京都
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['fukushi.metro.tokyo.lg.jp/shougai/', 'fukushi.metro.tokyo.lg.jp/documents/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 東京都の障害福祉サービス事業者向け通知。指定基準・都独自加算・集団指導の変更を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 神奈川県 福祉子どもみらい局 障害福祉課。
+  # 要検証: URL。神奈川県は課ごとに /docs/<3文字コード>/ という URL を持つが、
+  #         コードの割り当ては改編で変わる。NG なら
+  #         https://www.pref.kanagawa.jp/ の「組織から探す」→ 障害福祉課 を辿ること。
+  #         代替候補: https://www.pref.kanagawa.jp/div/0604/
+  #         itemSelector 代替候補: '#tmp_contents a'(神奈川県 CMS の本文 ID)/ '#contents a'
+  # ---------------------------------------------------------------------------
+  - id: mu_pref_kanagawa
+    name: 神奈川県 福祉子どもみらい局 障害福祉課(事業者向け)
+    type: html
+    url: https://www.pref.kanagawa.jp/docs/t3u/index.html
+    channels: [welfare]
+    priority: medium
+    region: 神奈川県
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['pref.kanagawa.jp/docs/', 'pref.kanagawa.jp/documents/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 神奈川県の障害福祉サービス事業者向け通知。指定基準・県独自加算・集団指導の変更を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 愛知県 福祉局 障害福祉課。
+  # 要検証: URL。愛知県は /soshiki/<課のローマ字>/ 形式。課名ローマ字が
+  #         'shogai-fukushi' でない可能性がある。NG なら
+  #         https://www.pref.aichi.jp/ の組織一覧から障害福祉課を辿ること。
+  #         itemSelector 代替候補: '#contents a' / '.news-list a'
+  # ---------------------------------------------------------------------------
+  - id: mu_pref_aichi
+    name: 愛知県 福祉局 障害福祉課(事業者向け)
+    type: html
+    url: https://www.pref.aichi.jp/soshiki/shogai-fukushi/
+    channels: [welfare]
+    priority: medium
+    region: 愛知県
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['pref.aichi.jp/soshiki/', 'pref.aichi.jp/uploaded/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 愛知県の障害福祉サービス事業者向け通知。指定基準・県独自加算・集団指導の変更を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 京都府 健康福祉部 障害者支援課。
+  # 要検証: URL。京都府は /<課のローマ字>/ 直下に課ページを置く形式。
+  #         NG なら https://www.pref.kyoto.jp/ の組織案内から障害者支援課を辿ること。
+  #         itemSelector 代替候補: '#contents a' / '#main a'
+  # ---------------------------------------------------------------------------
+  - id: mu_pref_kyoto
+    name: 京都府 健康福祉部 障害者支援課(事業者向け)
+    type: html
+    url: https://www.pref.kyoto.jp/shogaishien/index.html
+    channels: [welfare]
+    priority: medium
+    region: 京都府
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['pref.kyoto.jp/shogaishien/', 'pref.kyoto.jp/documents/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 京都府の障害福祉サービス事業者向け通知。指定基準・府独自加算・集団指導の変更を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 大阪府 福祉部 障がい福祉室(事業者指導・指定関係)。
+  # 要検証: URL。大阪府はサイト刷新で /<課>/ から /o/<課>/ 形式へ移行している。
+  #         NG なら以下を順に試すこと:
+  #           https://www.pref.osaka.lg.jp/o/keikakusuishin/     (障がい福祉企画課)
+  #           https://www.pref.osaka.lg.jp/o/seikatsukiban/      (生活基盤推進課)
+  #           https://www.pref.osaka.lg.jp/o/jiritsusoudan/      (地域生活支援課)
+  #         includeUrlPatterns は 'pref.osaka.lg.jp/o/' と広めに取ってあるので、
+  #         上記のどれに差し替えても候補抽出は効く。
+  #         itemSelector 代替候補: '#contents a' / '.news-list a'
+  # ---------------------------------------------------------------------------
+  - id: mu_pref_osaka
+    name: 大阪府 福祉部 障がい福祉室(事業者向け)
+    type: html
+    url: https://www.pref.osaka.lg.jp/o/jigyoshido/index.html
+    channels: [welfare]
+    priority: medium
+    region: 大阪府
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['pref.osaka.lg.jp/o/', 'pref.osaka.lg.jp/attach/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 大阪府の障害福祉サービス事業者向け通知。指定基準・府独自加算・集団指導の変更を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 兵庫県 福祉部 障害福祉課。
+  # 要検証: URL。兵庫県は部局ごとに /kf<数字>/ というディレクトリコードを使う。
+  #         kf16 が障害福祉課でない場合は https://web.pref.hyogo.lg.jp/ の
+  #         組織一覧から障害福祉課を辿って差し替えること。
+  #         itemSelector 代替候補: '#contents a' / '#tmp_contents a'
+  # ---------------------------------------------------------------------------
+  - id: mu_pref_hyogo
+    name: 兵庫県 福祉部 障害福祉課(事業者向け)
+    type: html
+    url: https://web.pref.hyogo.lg.jp/kf16/index.html
+    channels: [welfare]
+    priority: medium
+    region: 兵庫県
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['web.pref.hyogo.lg.jp/kf16/', 'web.pref.hyogo.lg.jp/documents/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 兵庫県の障害福祉サービス事業者向け通知。指定基準・県独自加算・集団指導の変更を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 福岡県 福祉労働部 障がい福祉課。
+  # 要検証: URL。福岡県は /section/<課>/ と /contents/<記事>.html が混在する。
+  #         NG なら https://www.pref.fukuoka.lg.jp/ の組織一覧から
+  #         障がい福祉課を辿って差し替えること。
+  #         itemSelector 代替候補: '#contents a' / '.news-list a'
+  # ---------------------------------------------------------------------------
+  - id: mu_pref_fukuoka
+    name: 福岡県 福祉労働部 障がい福祉課(事業者向け)
+    type: html
+    url: https://www.pref.fukuoka.lg.jp/section/shogai-fukushi/
+    channels: [welfare]
+    priority: medium
+    region: 福岡県
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns:
+        ['pref.fukuoka.lg.jp/section/', 'pref.fukuoka.lg.jp/contents/', 'pref.fukuoka.lg.jp/uploaded/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 福岡県の障害福祉サービス事業者向け通知。指定基準・県独自加算・集団指導の変更を検知する。
+
+  # ===========================================================================
+  # 政令指定都市および指定権限を持つ中核市(12)
+  # 指定・指導権限を持つため、都府県とは別に独自の事業者向け通知を出す。
+  # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # 横浜市(神奈川県)。事業者向け情報は /business/ 配下にまとまっている。
+  # 要検証: URL。NG なら https://www.city.yokohama.lg.jp/business/ から
+  #         「福祉・介護」→「障害福祉」を辿ること。
+  #         itemSelector 代替候補: '#contents a' / '.news-list a'
+  # ---------------------------------------------------------------------------
+  - id: mu_city_yokohama
+    name: 横浜市 健康福祉局 障害福祉(事業者向け)
+    type: html
+    url: https://www.city.yokohama.lg.jp/business/bunyabetsu/fukushi-kaigo/shogaifukushi/
+    channels: [welfare]
+    priority: medium
+    region: 神奈川県(横浜市)
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['city.yokohama.lg.jp/business/', 'city.yokohama.lg.jp/kurashi/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 横浜市の障害福祉サービス事業者向け通知。指定基準・市独自加算・集団指導の変更を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 川崎市(神奈川県)。ドメインが city.kawasaki.jp(lg.jp ではない)である点に注意。
+  # 要検証: URL。川崎市は局ごとに /<3桁数字>/ のディレクトリを使い、記事は
+  #         /<数字>/page/0000xxxxxx.html 形式。350 が健康福祉局でない場合は
+  #         https://www.city.kawasaki.jp/ から「事業者向け」→「障害福祉」を辿ること。
+  #         itemSelector 代替候補: '#contents a' / '.news-list a'
+  # ---------------------------------------------------------------------------
+  - id: mu_city_kawasaki
+    name: 川崎市 健康福祉局 障害保健福祉部(事業者向け)
+    type: html
+    url: https://www.city.kawasaki.jp/350/index.html
+    channels: [welfare]
+    priority: medium
+    region: 神奈川県(川崎市)
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['city.kawasaki.jp/350/', 'city.kawasaki.jp/cmsfiles/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 川崎市の障害福祉サービス事業者向け通知。指定基準・市独自加算・集団指導の変更を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 相模原市(神奈川県)。事業者向けは /jigyosha/ 配下。
+  # 要検証: URL。NG なら https://www.city.sagamihara.kanagawa.jp/ から
+  #         「事業者の方へ」→「福祉・障害」を辿ること。
+  #         itemSelector 代替候補: '#contents a' / '#tmp_contents a'
+  # ---------------------------------------------------------------------------
+  - id: mu_city_sagamihara
+    name: 相模原市 福祉部 障害政策課(事業者向け)
+    type: html
+    url: https://www.city.sagamihara.kanagawa.jp/jigyosha/fukushi/index.html
+    channels: [welfare]
+    priority: medium
+    region: 神奈川県(相模原市)
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['city.sagamihara.kanagawa.jp/jigyosha/', 'city.sagamihara.kanagawa.jp/_res/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 相模原市の障害福祉サービス事業者向け通知。指定基準・市独自加算・集団指導の変更を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 横須賀市(神奈川県・中核市)。政令市ではないが障害福祉サービス事業者の
+  # 指定・指導権限を持つため、政令市に準じて初期リリースに含める(冒頭コメント参照)。
+  # 要検証: URL。横須賀市は /<4桁数字>/ の部課ディレクトリを使う。
+  #         3050 が障害福祉課でない場合は https://www.city.yokosuka.kanagawa.jp/ の
+  #         組織一覧から障害福祉担当課を辿って差し替えること。
+  #         itemSelector 代替候補: '#contents a' / '.news-list a'
+  # ---------------------------------------------------------------------------
+  - id: mu_city_yokosuka
+    name: 横須賀市 福祉部 障害福祉課(事業者向け)
+    type: html
+    url: https://www.city.yokosuka.kanagawa.jp/3050/index.html
+    channels: [welfare]
+    priority: medium
+    region: 神奈川県(横須賀市)
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['city.yokosuka.kanagawa.jp/3050/', 'city.yokosuka.kanagawa.jp/g_images/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 横須賀市(中核市)の障害福祉サービス事業者向け通知。指定基準・市独自加算・集団指導の変更を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 名古屋市(愛知県)。健康福祉局のトップを監視する。
+  # 要検証: URL とセレクタ。名古屋市の一覧は
+  #         /kenkofukushi/category/<数字列>.html 形式のカテゴリページで、
+  #         数字列は改編で変わるため個別カテゴリは監視対象にしない(詳細設計書 §14)。
+  #         NG なら https://www.city.nagoya.jp/ から「事業者向け情報」→「障害福祉」を辿ること。
+  #         itemSelector 代替候補: '#contents a' / '.news-list a'
+  # ---------------------------------------------------------------------------
+  - id: mu_city_nagoya
+    name: 名古屋市 健康福祉局 障害福祉(事業者向け)
+    type: html
+    url: https://www.city.nagoya.jp/kenkofukushi/
+    channels: [welfare]
+    priority: medium
+    region: 愛知県(名古屋市)
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['city.nagoya.jp/kenkofukushi/', 'city.nagoya.jp/cmsfiles/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 名古屋市の障害福祉サービス事業者向け通知。指定基準・市独自加算・集団指導の変更を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 京都市(京都府)。保健福祉局配下。
+  # 要検証: URL。NG なら https://www.city.kyoto.lg.jp/ から
+  #         「事業者向け」→「障害福祉」を辿ること。
+  #         itemSelector 代替候補: '#contents a' / '#tmp_contents a'
+  # ---------------------------------------------------------------------------
+  - id: mu_city_kyoto
+    name: 京都市 保健福祉局 障害保健福祉推進室(事業者向け)
+    type: html
+    url: https://www.city.kyoto.lg.jp/hokenfukushi/
+    channels: [welfare]
+    priority: medium
+    region: 京都府(京都市)
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['city.kyoto.lg.jp/hokenfukushi/', 'city.kyoto.lg.jp/cmsfiles/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 京都市の障害福祉サービス事業者向け通知。指定基準・市独自加算・集団指導の変更を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 大阪市(大阪府)。福祉局配下。
+  # 要検証: URL。大阪市の一覧は /fukushi/category/<数字列>.html 形式だが、
+  #         数字列が改編で変わるため局トップを監視する(詳細設計書 §14)。
+  #         NG なら https://www.city.osaka.lg.jp/ から「事業者向け」→「障がい者福祉」を辿ること。
+  #         itemSelector 代替候補: '#contents a' / '.news-list a'
+  # ---------------------------------------------------------------------------
+  - id: mu_city_osaka
+    name: 大阪市 福祉局 障がい者施策部(事業者向け)
+    type: html
+    url: https://www.city.osaka.lg.jp/fukushi/
+    channels: [welfare]
+    priority: medium
+    region: 大阪府(大阪市)
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['city.osaka.lg.jp/fukushi/', 'city.osaka.lg.jp/contents/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 大阪市の障害福祉サービス事業者向け通知。指定基準・市独自加算・集団指導の変更を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 堺市(大阪府)。
+  # 要検証: URL。NG なら https://www.city.sakai.lg.jp/ から
+  #         「健康・福祉」→「障害福祉」→「事業者向け」を辿ること。
+  #         itemSelector 代替候補: '#contents a' / '#tmp_contents a'
+  # ---------------------------------------------------------------------------
+  - id: mu_city_sakai
+    name: 堺市 健康福祉局 障害福祉部(事業者向け)
+    type: html
+    url: https://www.city.sakai.lg.jp/kenko/fukushi/shogaifukushi/index.html
+    channels: [welfare]
+    priority: medium
+    region: 大阪府(堺市)
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['city.sakai.lg.jp/kenko/', 'city.sakai.lg.jp/cmsfiles/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 堺市の障害福祉サービス事業者向け通知。指定基準・市独自加算・集団指導の変更を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 神戸市(兵庫県)。
+  # 要検証: URL。神戸市の記事 URL には /a<5桁>/ という部局コードが入り、
+  #         ここに挙げたパスは推定である。NG なら https://www.city.kobe.lg.jp/ から
+  #         「事業者向け」→「障害福祉サービス事業者」を辿って差し替えること。
+  #         includeUrlPatterns も 'city.kobe.lg.jp/' 直下まで広げてあるので、
+  #         URL を差し替えれば部局コードが変わっても候補抽出は効く。
+  #         itemSelector 代替候補: '#contents a' / '.news-list a'
+  # ---------------------------------------------------------------------------
+  - id: mu_city_kobe
+    name: 神戸市 福祉局 障害福祉部(事業者向け)
+    type: html
+    url: https://www.city.kobe.lg.jp/kurashi/support/fukushi/shogaifukushi/
+    channels: [welfare]
+    priority: medium
+    region: 兵庫県(神戸市)
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['city.kobe.lg.jp/kurashi/', 'city.kobe.lg.jp/documents/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 神戸市の障害福祉サービス事業者向け通知。指定基準・市独自加算・集団指導の変更を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 福岡市(福岡県)。保健福祉局(/hofuku/)配下。
+  # 要検証: URL。NG なら https://www.city.fukuoka.lg.jp/ から
+  #         「事業者向け情報」→「障がい者福祉」を辿ること。
+  #         itemSelector 代替候補: '#contents a' / '.news-list a'
+  # ---------------------------------------------------------------------------
+  - id: mu_city_fukuoka
+    name: 福岡市 福祉局 障がい者部(事業者向け)
+    type: html
+    url: https://www.city.fukuoka.lg.jp/hofuku/
+    channels: [welfare]
+    priority: medium
+    region: 福岡県(福岡市)
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['city.fukuoka.lg.jp/hofuku/', 'city.fukuoka.lg.jp/data/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 福岡市の障害福祉サービス事業者向け通知。指定基準・市独自加算・集団指導の変更を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 北九州市(福岡県)。保健福祉局(/ho-huku/)配下。
+  # 要検証: URL。NG なら https://www.city.kitakyushu.lg.jp/ から
+  #         「事業者向け」→「障害福祉」を辿ること。
+  #         itemSelector 代替候補: '#contents a' / '#tmp_contents a'
+  # ---------------------------------------------------------------------------
+  - id: mu_city_kitakyushu
+    name: 北九州市 保健福祉局 障害福祉部(事業者向け)
+    type: html
+    url: https://www.city.kitakyushu.lg.jp/ho-huku/index.html
+    channels: [welfare]
+    priority: medium
+    region: 福岡県(北九州市)
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['city.kitakyushu.lg.jp/ho-huku/', 'city.kitakyushu.lg.jp/files/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 北九州市の障害福祉サービス事業者向け通知。指定基準・市独自加算・集団指導の変更を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 八王子市(東京都・中核市)。政令市ではないが障害福祉サービス事業者の
+  # 指定・指導権限を持つため、政令市に準じて初期リリースに含める(冒頭コメント参照)。
+  # 要検証: URL。ドメインは city.hachioji.tokyo.jp(lg.jp ではない)。
+  #         NG なら https://www.city.hachioji.tokyo.jp/ から
+  #         「事業者の方へ」→「障害福祉サービス事業者」を辿ること。
+  #         itemSelector 代替候補: '#contents a' / '.news-list a'
+  # ---------------------------------------------------------------------------
+  - id: mu_city_hachioji
+    name: 八王子市 福祉部 障害者福祉課(事業者向け)
+    type: html
+    url: https://www.city.hachioji.tokyo.jp/fukushi/shogai/index.html
+    channels: [welfare]
+    priority: medium
+    region: 東京都(八王子市)
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['city.hachioji.tokyo.jp/fukushi/', 'city.hachioji.tokyo.jp/_res/']
+      excludeUrlPatterns:
+        [
+          'javascript:',
+          'mailto:',
+          '.css',
+          '#',
+          '.pdf#',
+          'twitter.com',
+          'facebook.com',
+          'line.me',
+          'youtube.com',
+          'instagram.com',
+        ]
+    note: 八王子市(中核市)の障害福祉サービス事業者向け通知。指定基準・市独自加算・集団指導の変更を検知する。
+
+# =============================================================================
+# M3-09(中核市 追加分)で登録する自治体の一覧
+# 要件定義書 §5.4 の表のうち、初期リリースに含めなかった中核市。
+# 追加はこのファイルに 1 ブロック追記するだけでよい(FR-01 / NFR-05)。
+# id は mu_city_<ローマ字> とし、region は「<都府県名>(<市名>)」形式を守ること。
+#
+#   愛知県: 豊橋市(mu_city_toyohashi)、岡崎市(mu_city_okazaki)、
+#           豊田市(mu_city_toyota)、一宮市(mu_city_ichinomiya)
+#   大阪府: 豊中市(mu_city_toyonaka)、高槻市(mu_city_takatsuki)、
+#           枚方市(mu_city_hirakata)、八尾市(mu_city_yao)、
+#           寝屋川市(mu_city_neyagawa)、東大阪市(mu_city_higashiosaka)、
+#           吹田市(mu_city_suita)
+#   兵庫県: 姫路市(mu_city_himeji)、尼崎市(mu_city_amagasaki)、
+#           明石市(mu_city_akashi)、西宮市(mu_city_nishinomiya)
+#   福岡県: 久留米市(mu_city_kurume)
+#
+# 注: 八王子市(東京都)と横須賀市(神奈川県)は §5.4 の表では中核市だが、
+#     上記の理由で初期リリースに前倒しして本ファイルへ登録済みのため、
+#     M3-09 で重複登録しないこと(id 重複は起動時に ConfigError になる)。
+# =============================================================================
