@@ -221,6 +221,25 @@ resource "google_firestore_index" "runs_by_date_job" {
   }
 }
 
+# runs を job 指定なしで引く場合(CLI の health / 監査)に必要。
+# 上の (date, job, startedAt) は先頭から連続する部分集合しか使えないため、
+# job を飛ばした (date, startedAt DESC) は別インデックスが要る。
+resource "google_firestore_index" "runs_by_date" {
+  project     = var.project_id
+  database    = google_firestore_database.default.name
+  collection  = "runs"
+  query_scope = "COLLECTION"
+
+  fields {
+    field_path = "date"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "startedAt"
+    order      = "DESCENDING"
+  }
+}
+
 # ---------------------------------------------------------------------------
 # Secret Manager(詳細設計書 §11)
 # ---------------------------------------------------------------------------
