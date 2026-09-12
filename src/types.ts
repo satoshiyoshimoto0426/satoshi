@@ -121,13 +121,7 @@ export interface AppConfig {
 export type ItemContentType = 'html' | 'pdf' | 'text';
 
 export type ItemKind =
-  | 'law_amendment'
-  | 'fee_revision'
-  | 'notice'
-  | 'public_comment'
-  | 'budget'
-  | 'event'
-  | 'other';
+  'law_amendment' | 'fee_revision' | 'notice' | 'public_comment' | 'budget' | 'event' | 'other';
 
 export type Importance = 'high' | 'medium' | 'low';
 
@@ -353,7 +347,10 @@ export interface HttpClient {
   /** 条件付き GET。robots.txt 不許可なら RobotsDisallowedError を投げる。 */
   get(url: string, options?: HttpGetOptions): Promise<HttpResponse>;
   /** 到達確認(品質ゲート Q2)。2xx/3xx なら true。 */
-  checkReachable(url: string, timeoutMs?: number): Promise<{ ok: boolean; status: number | null; error: string | null }>;
+  checkReachable(
+    url: string,
+    timeoutMs?: number,
+  ): Promise<{ ok: boolean; status: number | null; error: string | null }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -361,10 +358,16 @@ export interface HttpClient {
 // ---------------------------------------------------------------------------
 
 export interface ItemQuery {
-  /** detectedAt >= from(ISO8601 UTC)。 */
+  /** 対象フィールド >= from(ISO8601 UTC)。 */
   from: string;
-  /** detectedAt < to(ISO8601 UTC)。 */
+  /** 対象フィールド < to(ISO8601 UTC)。 */
   to: string;
+  /**
+   * 範囲を判定するフィールド。既定は 'detectedAt'(初検知)。
+   * 'updatedAt' は「既知 URL の内容が更新された」ものを拾うために使う。
+   * detectedAt は初検知時刻のまま据え置かれるため、更新記事は detectedAt では拾えない。
+   */
+  field?: 'detectedAt' | 'updatedAt';
 }
 
 export interface Store {
@@ -374,7 +377,7 @@ export interface Store {
   putItem(item: Item): Promise<void>;
   /** 分類がまだ付いていないアイテムを古い順に取得。 */
   listUnclassifiedItems(limit: number): Promise<Item[]>;
-  /** detectedAt が [from, to) のアイテムを取得。 */
+  /** query.field(既定 detectedAt)が [from, to) のアイテムを取得。 */
   listItemsInWindow(query: ItemQuery): Promise<Item[]>;
   /** digestedIn に digestId を追記する。 */
   markItemsDigested(itemIds: string[], digestId: string): Promise<void>;

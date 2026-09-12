@@ -59,6 +59,15 @@ const EXCERPT_CHARS = 3000;
 /** 重要度の強さ。並べ替えにのみ使う。 */
 const IMPORTANCE_RANK: Record<Importance, number> = { high: 3, medium: 2, low: 1 };
 
+/**
+ * 更新記事を再掲するまでの最小間隔(日)。
+ * 既知ページの内容が変わると collect が再分類対象に戻す(詳細設計書 §6.1 の 6)。
+ * その更新も配信しないと「更新は検知したが誰にも届かない」状態になるが、
+ * 無条件に拾うと日付や訪問者数だけが変わるページを毎日再掲してしまう。
+ * そこで「直近この日数のあいだ同じチャネルで配信していないこと」を条件にする。
+ */
+const REDELIVER_MIN_INTERVAL_DAYS = 7;
+
 /** 分類済みであることが確定したアイテム。null チェックを 1 度で済ませるための内部型。 */
 interface Candidate {
   item: Item;
@@ -130,6 +139,43 @@ function resolveChannels(ctx: AppContext, channelIds: string[] | undefined): Cha
     );
   }
   return resolved;
+}
+
+/**
+ * digestedIn に入っているダイジェスト ID から「このチャネルで最後に配信した JST 日付」を取り出す。
+ * ダイジェスト ID は `${channelId}_${YYYY-MM-DD}` 形式なので、ID から復元できる。
+ * 別途フィールドを持たせるより、既にある情報から導くほうが不整合が起きない。
+ */
+function lastDigestedDate(item: Item, channelId: string): string | null {
+  const prefix = `${channelId}_`;
+  let latest: string | null = null;
+  for (const id of item.digestedIn) {
+    if (!id.startsWith(prefix)) continue;
+    const date = id.slice(prefix.length);
+    if (!isValidDateString(date)) continue;
+    if (latest === null || date > latest) latest = date;
+  }
+  return latest;
+}
+
+/**
+ * 更新記事(既知 URL の本文が変わったもの)をダイジェスト候補に加えてよいか。
+ *
+ * 条件:
+ *  1. 更新後に再分類が済んでいること(classifiedAt が更新時刻以降)。
+ *     未分類のまま拾うと、内容が変わったのに古い判定で配信してしまう。
+ *  2. 直近 REDELIVER_MIN_INTERVAL_DAYS 日のあいだ、このチャネルで配信していないこと。
+ *     軽微な更新の再掲を防ぐ。
+ */
+function isRedeliverableUpdate(item: Item, channel: ChannelConfig, dateJst: string): boolean {
+  if (item.classifiedAt === null) return false;
+  if (item.classifiedAt < item.updatedAt) return false;
+
+  const last = lastDigestedDate(item, channel.id);
+  if (last === null) return true;
+  // addDays は ISO8601 を扱うので、日付だけの比較用に 00:00Z を補って計算する。
+  const earliest = addDays(`${last}T00:00:00.000Z`, REDELIVER_MIN_INTERVAL_DAYS).slice(0, 10);
+  return dateJst >= earliest;
 }
 
 /**
@@ -404,7 +450,30 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
   }
 
   // --- 2〜3. 対象ウィンドウのアイテムを絞り込む -------------------------------
-  const windowItems = await ctx.store.listItemsInWindow(job.window);
+  // 新着(detectedAt がウィンドウ内)に加え、既知 URL の内容が更新されたもの
+  // (updatedAt がウィンドウ内)も対象にする。detectedAt は初検知時刻のまま据え置かれるため、
+  // 更新分は detectedAt のクエリでは拾えず、「更新は検知したが誰にも届かない」状態になる(FR-02)。
+  const [freshItems, touchedItems] = await Promise.all([
+    ctx.store.listItemsInWindow(job.window),
+    ctx.store.listItemsInWindow({ ...job.window, field: 'updatedAt' }),
+  ]);
+
+  const byId = new Map(freshItems.map((item) => [item.id, item]));
+  let updatedPicked = 0;
+  for (const item of touchedItems) {
+    if (byId.has(item.id)) continue; // 新着として既に入っている
+    if (item.detectedAt >= job.window.from) continue; // ウィンドウ内の新着(取りこぼし防止の保険)
+    if (!isRedeliverableUpdate(item, channel, dateJst)) continue;
+    byId.set(item.id, item);
+    updatedPicked += 1;
+  }
+  if (updatedPicked > 0) {
+    log.info('内容が更新された既知アイテムを候補に加えました', { count: updatedPicked });
+  }
+
+  const windowItems = [...byId.values()].sort((a, b) =>
+    a.detectedAt < b.detectedAt ? -1 : a.detectedAt > b.detectedAt ? 1 : a.id < b.id ? -1 : 1,
+  );
   const candidates = selectCandidates(windowItems, channel, digestId, log);
 
   // --- 4. 重要度 → 関連度 で並べ、上位 20 件だけを AI に渡す --------------------

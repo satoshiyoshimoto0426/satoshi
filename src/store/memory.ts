@@ -124,12 +124,13 @@ export function createMemoryStore(): MemoryStore {
     },
 
     async listItemsInWindow(query: ItemQuery): Promise<Item[]> {
-      // detectedAt は ISO8601 UTC 文字列。ISO8601 は辞書順 = 時系列順なので文字列比較でよい。
+      // ISO8601 UTC 文字列は辞書順 = 時系列順なので文字列比較でよい。
       // 区間は [from, to)。境界の to を含めないのは、日次ウィンドウを連結したときに
       // 同じアイテムが 2 日分のダイジェストに入るのを防ぐため。
+      const field = query.field ?? 'detectedAt';
       return [...items.values()]
-        .filter((item) => item.detectedAt >= query.from && item.detectedAt < query.to)
-        .sort((a, b) => compareAsc(a.detectedAt, b.detectedAt, a.id, b.id))
+        .filter((item) => item[field] >= query.from && item[field] < query.to)
+        .sort((a, b) => compareAsc(a[field], b[field], a.id, b.id))
         .map(clone);
     },
 

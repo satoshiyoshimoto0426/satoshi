@@ -241,7 +241,14 @@ function disableSourceNode(node: YAMLMap, reason: string, dateJst: string): bool
     // enabled は既定 true なので YAML に書かれていないこともある。その場合は追記する。
     const key = new Scalar('enabled');
     key.commentBefore = comment;
-    node.items.push(new Pair(key, new Scalar(false)));
+    const added = new Pair(key, new Scalar(false));
+    // 既存ファイルの並び(id/name/type/url/channels/priority/region/enabled/html/note)に合わせ、
+    // 入れ子ブロックの手前に差し込む。末尾に足すと note の後ろに離れて読みづらくなる。
+    const before = node.items.findIndex(
+      (item) => isScalar(item.key) && ['html', 'egov', 'note'].includes(String(item.key.value)),
+    );
+    if (before >= 0) node.items.splice(before, 0, added);
+    else node.items.push(added);
     return true;
   }
 

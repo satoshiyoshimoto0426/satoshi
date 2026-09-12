@@ -153,13 +153,16 @@ export function createFirestoreStore(projectId: string | null, databaseId: strin
     },
 
     async listItemsInWindow(query: ItemQuery): Promise<Item[]> {
-      // detectedAt は ISO8601 UTC 文字列。辞書順 = 時系列順なので文字列の範囲比較で正しい。
+      // ISO8601 UTC 文字列は辞書順 = 時系列順なので文字列の範囲比較で正しい。
       // 区間は [from, to)。境界を含めないことで、日次ウィンドウを連結しても
       // 同じアイテムが 2 日分のダイジェストに入らない。
+      // field は単一フィールドの範囲クエリなので、Firestore の自動インデックスで賄える
+      // (複合インデックスの追加は不要)。
+      const field = query.field ?? 'detectedAt';
       const snapshot = await itemsCol
-        .where('detectedAt', '>=', query.from)
-        .where('detectedAt', '<', query.to)
-        .orderBy('detectedAt')
+        .where(field, '>=', query.from)
+        .where(field, '<', query.to)
+        .orderBy(field)
         .get();
       return snapshot.docs.map((doc) => doc.data() as Item);
     },

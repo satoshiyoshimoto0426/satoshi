@@ -71,6 +71,10 @@ export async function runDeliver(ctx: AppContext, opts: DeliverOptions = {}): Pr
   // 翌日の本番実行が冪等スキップしてしまう。記録ごと止めるため両者を同一視する。
   const dryRun = opts.dryRun === true || ctx.config.runtime.dryRun;
 
+  // チャネルの絞り込みは Run を記録する前に行う。綴り間違いで落ちたときに
+  // 'running' のまま終わらない実行記録を残さないため。
+  const channels = selectChannels(ctx, opts.channelIds);
+
   const counts = emptyCounts();
   const errors: string[] = [];
   const run: Run = {
@@ -85,8 +89,6 @@ export async function runDeliver(ctx: AppContext, opts: DeliverOptions = {}): Pr
     expiresAt: addDays(startedIso, ctx.config.runtime.retentionDays),
   };
   await ctx.store.putRun(run);
-
-  const channels = selectChannels(ctx, opts.channelIds);
   logger.info('配信を開始します', { channels: channels.map((c) => c.id), dryRun });
 
   const finish = async (): Promise<Run> => {
