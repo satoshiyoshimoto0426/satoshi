@@ -458,9 +458,19 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
     ctx.store.listItemsInWindow({ ...job.window, field: 'updatedAt' }),
   ]);
 
-  const byId = new Map(freshItems.map((item) => [item.id, item]));
+  // force での作り直しでは、この digest 自身が付けた「使用済み」印を無かったことにする。
+  // さもないと再生成のたびに対象が 0 件になり、「新着はあったのに
+  // 『本日の新着はありません』」という事実と異なる配信物ができてしまう
+  // (再利用防止の印は "他の日のダイジェストで使った" ことを表すためのもの)。
+  const forgetOwnMark = (item: Item): Item =>
+    job.force && item.digestedIn.includes(digestId)
+      ? { ...item, digestedIn: item.digestedIn.filter((id) => id !== digestId) }
+      : item;
+
+  const byId = new Map(freshItems.map((item) => [item.id, forgetOwnMark(item)]));
   let updatedPicked = 0;
-  for (const item of touchedItems) {
+  for (const touched of touchedItems) {
+    const item = forgetOwnMark(touched);
     if (byId.has(item.id)) continue; // 新着として既に入っている
     if (item.detectedAt >= job.window.from) continue; // ウィンドウ内の新着(取りこぼし防止の保険)
     if (!isRedeliverableUpdate(item, channel, dateJst)) continue;

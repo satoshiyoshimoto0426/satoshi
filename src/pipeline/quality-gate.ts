@@ -171,12 +171,17 @@ function applyStaticChecks(
 
     // --- Q4: 必須項目が空でないか -------------------------------------------
     // 空の見出しや要点は、読者から見れば「壊れた配信」でしかない。
+    //
+    // affected(対象)は意図的に必須にしない(Q4a)。パブリックコメントのように
+    // 「影響を受ける対象」が原文から読み取れない種類の情報があり、必須にすると
+    // AI に対象を推測させることになる。推測は NFR-02 に反する。
+    // 空の場合は line/format 側が「対象:」行ごと省略する。
     const blankField = isBlank(entry.headline)
       ? '見出し'
       : isBlank(entry.summary)
         ? '要点'
-        : isBlank(entry.affected)
-          ? '対象'
+        : isBlank(entry.sourceUrl)
+          ? '出典 URL'
           : null;
     if (blankField !== null) {
       reject('Q4', `${blankField}が空です`);
