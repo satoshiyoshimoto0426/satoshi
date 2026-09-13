@@ -70,7 +70,9 @@ jobs:
     name: Docker イメージのビルド確認
     # push のみ。Dockerfile が壊れていないことの確認が目的で、
     # PR ごとに毎回回すには重い(依存の完全インストールを 2 回行うため)。
-    if: github.event_name == 'push'
+    # main は deploy.yml が同じイメージを本番用にビルドするので、ここでは回さない。
+    # 両方走らせると同じキャッシュスコープを奪い合い、ビルド時間が二重に溶ける。
+    if: github.event_name == 'push' && github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

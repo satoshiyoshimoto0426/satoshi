@@ -4,6 +4,12 @@
 根拠: `docs/03_詳細設計書.md` §2.1 / §5 / §10 / §11 / §12、`docs/01_要件定義書.md` FR-02・FR-05・FR-10・FR-16・NFR-01・NFR-03・NFR-08。
 対応タスク: **M0-03**(プロジェクト・API 有効化)/ **M1-10**(collect のジョブ化 + スケジュール)/ **M2-08**(summarize・deliver のスケジュール)。
 
+> **通常この手順は不要です。** `main` ブランチへ push すれば
+> `.github/workflows/deploy.yml` が自動で適用します(運用手順書 §6)。
+> 初回の準備は `infra/bootstrap.sh` と `scripts/set-secrets.sh` が行います。
+>
+> 以下は、自動デプロイを使わず手元から適用する場合の手順です。
+
 ## 何が作られるか
 
 | 種別 | リソース | 備考 |
@@ -60,14 +66,17 @@ terraform init
 チェックサムを固定し、全員・CI で同じプロバイダを使うため)。`.terraform/` と `terraform.tfvars` は
 `.gitignore` 済みです。
 
-### 1. API・レジストリ・シークレットの「箱」だけ先に作る
+### 1. API とレジストリだけ先に作る
 
 ```bash
 terraform apply \
   -target=google_project_service.services \
-  -target=google_artifact_registry_repository.docker \
-  -target=google_secret_manager_secret.secrets
+  -target=google_artifact_registry_repository.docker
 ```
+
+> シークレットの「箱」は Terraform では作りません(`infra/bootstrap.sh` が作ります)。
+> 両方で作ると `secret_id` が衝突して apply が 409 で失敗し、
+> レプリケーション方式は不変属性なのであとから片方へ寄せることもできないためです。
 
 > API 有効化の反映に数十秒かかることがあります。`API has not been used in project ...` で失敗したら、
 > 1〜2 分おいて同じコマンドを再実行してください。
@@ -109,6 +118,9 @@ gcloud artifacts docker images describe "$IMAGE" --format='value(image_summary.f
 > サブコマンドを切り替えます(Dockerfile の構成を変える場合は `main.tf` の `common_env` も合わせること)。
 
 ### 3. シークレット値の投入
+
+> `bash scripts/set-secrets.sh` を使うと、値を画面にもシェル履歴にも出さずに投入できます。
+> 以下は個別に入れる場合のコマンドです。
 
 **値をコマンドライン引数に書かないでください**(シェル履歴とプロセス一覧に残ります)。
 標準入力から渡します。`printf` を使うのは、`echo` が付ける末尾改行をトークンに混入させないためです。

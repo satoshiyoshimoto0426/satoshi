@@ -30,9 +30,11 @@ on:
         type: boolean
         default: false
 
-# 同時に 2 つ apply が走ると tfstate が競合する。前の実行は待たせる(打ち切らない)。
+# tfstate のロックは state 単位なので、グループも state 単位にする。
+# ref ごとにすると、PR の terraform plan と main の apply が同時に走って
+# 「Error acquiring the state lock」で落ちる。前の実行は待たせる(打ち切らない)。
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: terraform-${{ vars.TF_STATE_BUCKET }}
   cancel-in-progress: false
 
 permissions:
@@ -50,6 +52,9 @@ jobs:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION || 'asia-northeast1' }}
       STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      # Firestore のロケーションは作成後に変更できない。REGION を後から変えても
+      # Firestore だけ元の場所に残るため、独立した変数として明示的に渡す。
+      FIRESTORE_LOCATION: ${{ vars.GCP_FIRESTORE_LOCATION || vars.GCP_REGION || 'asia-northeast1' }}
       REPOSITORY: seido-watch
 
     steps:
@@ -118,9 +123,20 @@ jobs:
       - name: Terraform 初期化
         working-directory: infra/terraform
         run: |
-          terraform init -input=false \
-            -backend-config="bucket=${STATE_BUCKET}" \
-            -backend-config="prefix=seido-watch"
+          # .terraform.lock.hcl がコミットされていれば、それを厳密に使う
+          # (プロバイダのバージョンを固定し、CI と手元で同じものを使うため)。
+          # まだ無い場合は解決してから進む(初回)。
+          if [[ -f .terraform.lock.hcl ]]; then
+            terraform init -input=false -lockfile=readonly \
+              -backend-config="bucket=${STATE_BUCKET}" \
+              -backend-config="prefix=seido-watch"
+          else
+            echo "::warning::.terraform.lock.hcl がコミットされていません。" \
+                 "初回デプロイ後に 'terraform init' を手元で実行し、生成された lock ファイルをコミットしてください。"
+            terraform init -input=false \
+              -backend-config="bucket=${STATE_BUCKET}" \
+              -backend-config="prefix=seido-watch"
+          fi
 
       - name: 書式と構文を検査
         working-directory: infra/terraform
@@ -136,6 +152,7 @@ jobs:
           terraform plan -input=false -no-color \
             -var="project_id=${PROJECT_ID}" \
             -var="region=${REGION}" \
+            -var="firestore_location=${FIRESTORE_LOCATION}" \
             -var="image=${{ steps.image.outputs.uri }}"
 
       # --- 本番反映 -------------------------------------------------------
@@ -150,6 +167,7 @@ jobs:
             -target=google_artifact_registry_repository.docker \
             -var="project_id=${PROJECT_ID}" \
             -var="region=${REGION}" \
+            -var="firestore_location=${FIRESTORE_LOCATION}" \
             -var="image=${{ steps.image.outputs.uri }}"
 
       - name: イメージをビルドして push
@@ -169,17 +187,64 @@ jobs:
           terraform apply -input=false -auto-approve \
             -var="project_id=${PROJECT_ID}" \
             -var="region=${REGION}" \
+            -var="firestore_location=${FIRESTORE_LOCATION}" \
             -var="image=${{ steps.image.outputs.uri }}"
 
       # --- 反映後の確認 ---------------------------------------------------
-      # 設定 YAML が読めること、LINE トークンが解決できることを、
-      # 実際に配信せずに確かめる。ここで落ちれば翌朝の配信前に気づける。
-      - name: 疎通確認(送信はしない)
+      # (1) 反映されたことの確定的な確認。3 ジョブすべてが新しいイメージを指しているか。
+      #     ここが食い違っていたら apply が意図どおりに効いていない。
+      - name: 反映されたイメージを照合
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          expected='${{ steps.image.outputs.uri }}'
+          fail=0
+          for job in collect summarize deliver; do
+            # --format のフィールドパスは gcloud が返す表現(v1 / v2)で異なり、
+            # 存在しないキーを指定してもエラーにならず空文字が返る = 常に不一致になる。
+            # 表現に依存しないよう JSON 全体から完全一致を探す。
+            json="$(gcloud run jobs describe "seido-watch-${job}" \
+              --region "${REGION}" --project "${PROJECT_ID}" --format=json)"
+            if grep -qF "\"${expected}\"" <<<"${json}"; then
+              echo "✓ seido-watch-${job}"
+            else
+              echo "× seido-watch-${job}: 期待したイメージ ${expected} が見つかりません" >&2
+              fail=1
+            fi
+          done
+          exit "${fail}"
+
+      # (2) 実行時の確認。イメージが起動し、設定 YAML が読めることを確かめる。
+      #
+      #     deliver --dry-run は使わない。当日の digest がまだ無い時間帯
+      #     (summarize は 07:00 JST)には「ダイジェストがありません」で必ず失敗し、
+      #     さらに Slack へ error 通知を飛ばして障害アラートまで誤発報するため。
+      #     validate-config なら副作用が無く、設定の壊れは確実に捕まえられる。
+      - name: 疎通確認(配信はしない)
         if: github.event_name != 'pull_request' && inputs.skip_smoke_test != true
         run: |
-          gcloud run jobs execute seido-watch-deliver \
+          set -uo pipefail
+          out="$(gcloud run jobs execute seido-watch-deliver \
             --region "${REGION}" --project "${PROJECT_ID}" --wait \
-            --args=deliver,--dry-run
+            --args=validate-config 2>&1)" && status=0 || status=$?
+          echo "${out}"
+
+          if [[ "${status}" -eq 0 ]]; then
+            echo "✓ イメージが起動し、設定を読み込めました"
+            exit 0
+          fi
+
+          # --args による上書きは gcloud のバージョンによっては使えない。
+          # フラグが無いだけでデプロイ全体を失敗させたくないので、
+          # 「未知のフラグ」だけを見分けて警告に落とす(それ以外は本物の失敗)。
+          if grep -qiE 'unrecognized arguments|unknown flag' <<<"${out}"; then
+            echo "::warning::この gcloud では --args による引数の上書きが使えないため、起動確認を省略しました。" \
+                 "イメージの照合は成功しています。"
+            exit 0
+          fi
+
+          echo "::error::起動確認に失敗しました。シークレット未投入や設定不備の可能性があります。"
+          exit "${status}"
 
       - name: 反映内容を表示
         if: github.event_name != 'pull_request'

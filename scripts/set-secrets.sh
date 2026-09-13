@@ -30,14 +30,19 @@ add_secret() {
   fi
 
   # -s で画面に出さない。履歴にも残らない。
-  read -r -s -p "  値を貼り付けて Enter(変更しない場合は空のまま Enter): " value
+  # Ctrl+D や端末が TTY でない場合に read は非ゼロを返すが、
+  # set -e でスクリプト全体を落とさず「変更しない」として扱う。
+  read -r -s -p "  値を貼り付けて Enter(変更しない場合は空のまま Enter): " value || true
   echo
 
   if [[ -z "${value}" ]]; then
     if [[ "${required}" == "required" ]] &&
       ! gcloud secrets versions list "${name}" --project "${PROJECT_ID}" --limit 1 --format='value(name)' 2>/dev/null | grep -q .; then
-      echo "  × このシークレットは必須です。値を入れないと配信できません。" >&2
-      return 1
+      echo "  × このシークレットには値が必要です。" >&2
+      echo "    Cloud Run Jobs はジョブ作成時に値の存在を検証するため、" >&2
+      echo "    1 つでも欠けるとデプロイが失敗します。" >&2
+      echo "    値を用意してから、もう一度このスクリプトを実行してください。" >&2
+      exit 1
     fi
     echo "  変更しませんでした。"
     return 0
@@ -56,8 +61,12 @@ add_secret line-token-welfare \
   "LINE チャネルアクセストークン(就労支援、放課後デイ情報局)" required
 add_secret anthropic-api-key \
   "Anthropic API キー" required
+# Slack も必須にしている。Cloud Run Jobs はジョブ作成時に参照先バージョンの存在を
+# 検証するため、1 つでも値が無いとジョブの作成が失敗する。
+# Slack を使わない運用にするなら、値を入れるのではなく
+# infra/terraform/main.tf の各ジョブの secret_env から SLACK_WEBHOOK_URL を外すこと。
 add_secret slack-webhook-url \
-  "Slack Incoming Webhook URL(運用通知先。未設定ならログ出力のみ)" optional
+  "Slack Incoming Webhook URL(運用通知先。使わない場合は §6.1 の注記を参照)" required
 
 cat <<'EOF'
 

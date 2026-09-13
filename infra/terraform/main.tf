@@ -244,27 +244,19 @@ resource "google_firestore_index" "runs_by_date" {
 # Secret Manager(詳細設計書 §11)
 # ---------------------------------------------------------------------------
 
-resource "google_secret_manager_secret" "secrets" {
-  for_each = local.secret_ids
-
-  project   = var.project_id
-  secret_id = each.value
-
-  labels = {
-    app = local.name_prefix
-  }
-
-  # データ所在地を国内に寄せるため、自動レプリケーションではなくリージョン指定にする。
-  replication {
-    user_managed {
-      replicas {
-        location = var.region
-      }
-    }
-  }
-
-  depends_on = [google_project_service.services]
-}
+# シークレットの「箱」は Terraform では作らない。infra/bootstrap.sh が作る。
+#
+# なぜ Terraform 管理下に置かないか:
+#   Cloud Run Jobs はジョブ作成時に参照先シークレットの「バージョンが存在すること」を
+#   検証する。つまり値の投入が先に済んでいなければジョブは作れない。
+#   値の投入は人が手元で行う作業(トークンを CI に置かないため)なので、
+#   「箱の作成 → 値の投入 → ジョブ作成」の順序を Terraform の中では表現できない。
+#   箱の作成を bootstrap.sh に寄せることで、
+#     bootstrap.sh(箱)→ set-secrets.sh(値)→ push → terraform apply(ジョブ)
+#   という一方向の流れになり、初回デプロイが一度で通る。
+#
+#   両方で作ると secret_id が衝突して apply が必ず 409 で失敗する。
+#   レプリケーション方式も不変属性なので、あとから片方に寄せることもできない。
 
 # ---------------------------------------------------------------------------
 # サービスアカウントと IAM(最小権限 / NFR-03)
@@ -303,11 +295,13 @@ resource "google_project_iam_member" "job_roles" {
 }
 
 # secretAccessor はプロジェクト全体ではなく、シークレット 1 件ごとに付与する(最小権限)。
+# シークレット自体は bootstrap.sh が作成済みである前提。
+# 未作成なら apply がここで「シークレットが見つからない」と失敗する(意図した挙動)。
 resource "google_secret_manager_secret_iam_member" "job_secret_accessor" {
-  for_each = google_secret_manager_secret.secrets
+  for_each = local.secret_ids
 
   project   = var.project_id
-  secret_id = each.value.secret_id
+  secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.job.email}"
 }

@@ -37,15 +37,15 @@ output "scheduler_jobs" {
 }
 
 output "secret_ids" {
-  description = "作成された Secret Manager のシークレット ID。値は別途 gcloud で投入する。"
-  value       = { for k, s in google_secret_manager_secret.secrets : k => s.secret_id }
+  description = "参照している Secret Manager のシークレット ID(作成は infra/bootstrap.sh)。"
+  value       = local.secret_ids
 }
 
 output "secret_version_commands" {
   description = "シークレット値を投入するコマンド(値は標準入力から渡す。履歴に値を残さないこと)。"
   value = {
-    for k, s in google_secret_manager_secret.secrets :
-    k => "printf '%s' '<値>' | gcloud secrets versions add ${s.secret_id} --project=${var.project_id} --data-file=-"
+    for k, id in local.secret_ids :
+    k => "printf '%s' '<値>' | gcloud secrets versions add ${id} --project=${var.project_id} --data-file=-"
   }
 }
 

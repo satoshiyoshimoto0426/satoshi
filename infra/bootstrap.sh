@@ -29,6 +29,9 @@ set -euo pipefail
 PROJECT_ID="${PROJECT_ID:?PROJECT_ID を指定してください(例: export PROJECT_ID=my-project)}"
 GITHUB_REPO="${GITHUB_REPO:-satoshiyoshimoto0426/satoshi}"
 REGION="${REGION:-asia-northeast1}"
+# 認証を許可するブランチ。ここを絞らないと、このリポジトリに push できる人なら
+# 任意のブランチに自作のワークフローを置いてデプロイ用トークンを取得できてしまう。
+DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 
 STATE_BUCKET="${PROJECT_ID}-tfstate"
 DEPLOY_SA="seido-watch-deployer"
@@ -42,7 +45,9 @@ DEPLOY_ROLES=(
   roles/serviceusage.serviceUsageAdmin   # API の有効化
   roles/artifactregistry.admin           # イメージ置き場の作成とプッシュ
   roles/datastore.owner                  # Firestore の DB・インデックス・TTL
-  roles/secretmanager.admin              # シークレットの作成と IAM 付与
+  # シークレットは bootstrap が作るので、デプロイ SA には IAM 付与の権限だけ与える。
+  # roles/secretmanager.admin は versions.access を含み、デプロイ SA から
+  # トークンの平文を読み出せてしまうため使わない(下でカスタムロールを作る)。
   roles/run.admin                        # Cloud Run Jobs
   roles/cloudscheduler.admin             # Cloud Scheduler
   roles/iam.serviceAccountAdmin          # 実行用 SA の作成
@@ -53,6 +58,21 @@ DEPLOY_ROLES=(
 )
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+
+# IAM ポリシーは読み取り→更新の形なので、短時間に連続で叩くと etag の競合で失敗する。
+# 冪等な操作なので、競合したら少し待って数回やり直す。
+retry() {
+  local attempt=1 max=5
+  until "$@"; do
+    if ((attempt >= max)); then
+      echo "  × ${max} 回試しましたが失敗しました: $*" >&2
+      return 1
+    fi
+    echo "  … 競合したため再試行します(${attempt}/${max})"
+    sleep $((attempt * 3))
+    ((attempt++))
+  done
+}
 
 say "プロジェクト: ${PROJECT_ID} / リージョン: ${REGION} / リポジトリ: ${GITHUB_REPO}"
 gcloud config set project "${PROJECT_ID}" >/dev/null
@@ -66,7 +86,6 @@ gcloud services enable \
   firestore.googleapis.com \
   secretmanager.googleapis.com \
   artifactregistry.googleapis.com \
-  cloudbuild.googleapis.com \
   logging.googleapis.com \
   monitoring.googleapis.com \
   iamcredentials.googleapis.com \
@@ -91,6 +110,24 @@ echo "  バージョニング: 有効"
 
 # ---------------------------------------------------------------------------
 say "3/5 デプロイ用サービスアカウントを用意します"
+
+# シークレットの IAM を触れるが「値は読めない」カスタムロール。
+# Terraform は job SA に secretAccessor を付ける(setIamPolicy)必要があるだけで、
+# 値そのものを読む必要は無い。
+SECRET_ROLE_ID="seidoWatchSecretIam"
+SECRET_ROLE="projects/${PROJECT_ID}/roles/${SECRET_ROLE_ID}"
+SECRET_PERMS="secretmanager.secrets.get,secretmanager.secrets.list,secretmanager.secrets.getIamPolicy,secretmanager.secrets.setIamPolicy"
+if gcloud iam roles describe "${SECRET_ROLE_ID}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
+  retry gcloud iam roles update "${SECRET_ROLE_ID}" --project "${PROJECT_ID}" \
+    --permissions "${SECRET_PERMS}" --quiet >/dev/null
+  echo "  カスタムロールを更新しました: ${SECRET_ROLE_ID}"
+else
+  gcloud iam roles create "${SECRET_ROLE_ID}" --project "${PROJECT_ID}" \
+    --title "制度改正ウォッチ シークレット IAM(値は読めない)" \
+    --permissions "${SECRET_PERMS}" >/dev/null
+  echo "  カスタムロールを作成しました: ${SECRET_ROLE_ID}"
+fi
+DEPLOY_ROLES+=("${SECRET_ROLE}")
 # ---------------------------------------------------------------------------
 if gcloud iam service-accounts describe "${DEPLOY_SA_EMAIL}" >/dev/null 2>&1; then
   echo "  既にあります: ${DEPLOY_SA_EMAIL}"
@@ -99,20 +136,27 @@ else
     --project "${PROJECT_ID}" \
     --display-name "制度改正ウォッチ デプロイ用(GitHub Actions)"
   echo "  作成しました: ${DEPLOY_SA_EMAIL}"
+  # 作成直後は IAM に伝播していないことがあり、続く付与が NOT_FOUND になる。
+  sleep 10
 fi
 
 for role in "${DEPLOY_ROLES[@]}"; do
-  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  retry gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
     --member "serviceAccount:${DEPLOY_SA_EMAIL}" \
     --role "${role}" --condition=None >/dev/null
   echo "  付与: ${role}"
 done
 
 # 状態バケットへの読み書き。プロジェクト全体の storage.admin は付けない。
-gcloud storage buckets add-iam-policy-binding "gs://${STATE_BUCKET}" \
+retry gcloud storage buckets add-iam-policy-binding "gs://${STATE_BUCKET}" \
   --member "serviceAccount:${DEPLOY_SA_EMAIL}" \
   --role roles/storage.objectAdmin >/dev/null
-echo "  付与: gs://${STATE_BUCKET} への objectAdmin"
+# objectAdmin はオブジェクト操作のみで buckets.get を含まない。
+# Terraform の gcs バックエンドはバケットの存在確認を行うため、これが無いと init が 403 になる。
+retry gcloud storage buckets add-iam-policy-binding "gs://${STATE_BUCKET}" \
+  --member "serviceAccount:${DEPLOY_SA_EMAIL}" \
+  --role roles/storage.legacyBucketReader >/dev/null
+echo "  付与: gs://${STATE_BUCKET} への objectAdmin / legacyBucketReader"
 
 # ---------------------------------------------------------------------------
 say "4/5 Workload Identity 連携(GitHub Actions の鍵なし認証)を用意します"
@@ -138,16 +182,17 @@ else
     --workload-identity-pool "${POOL_ID}" \
     --display-name "GitHub OIDC" \
     --issuer-uri "https://token.actions.githubusercontent.com" \
-    --attribute-mapping "google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner" \
-    --attribute-condition "assertion.repository == '${GITHUB_REPO}'"
-  echo "  プロバイダを作成しました: ${PROVIDER_ID}(${GITHUB_REPO} に限定)"
+    --attribute-mapping "google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner,attribute.ref=assertion.ref" \
+    --attribute-condition "assertion.repository == '${GITHUB_REPO}' && assertion.ref == 'refs/heads/${DEPLOY_BRANCH}'"
+  echo "  プロバイダを作成しました: ${PROVIDER_ID}"
+  echo "  認証できるのは ${GITHUB_REPO} の ${DEPLOY_BRANCH} ブランチのみです"
 fi
 
 PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
 POOL_NAME="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL_ID}"
 PROVIDER_NAME="${POOL_NAME}/providers/${PROVIDER_ID}"
 
-gcloud iam service-accounts add-iam-policy-binding "${DEPLOY_SA_EMAIL}" \
+retry gcloud iam service-accounts add-iam-policy-binding "${DEPLOY_SA_EMAIL}" \
   --project "${PROJECT_ID}" \
   --role roles/iam.workloadIdentityUser \
   --member "principalSet://iam.googleapis.com/${POOL_NAME}/attribute.repository/${GITHUB_REPO}" >/dev/null
@@ -155,12 +200,18 @@ echo "  ${GITHUB_REPO} からの偽装を許可しました"
 
 # ---------------------------------------------------------------------------
 say "5/5 Secret Manager のシークレットを用意します(値はまだ入れません)"
+# 箱の作成はここに一本化する。Terraform 側では作らない(両方で作ると 409 で衝突する)。
+# Cloud Run Jobs はジョブ作成時にバージョンの存在を検証するため、
+# 「箱 → 値 → ジョブ」の順序が必要で、その順序は Terraform 内では表現できない。
 # ---------------------------------------------------------------------------
 for secret in line-token-ai-reskill line-token-welfare anthropic-api-key slack-webhook-url; do
   if gcloud secrets describe "${secret}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
     echo "  既にあります: ${secret}"
   else
-    gcloud secrets create "${secret}" --project "${PROJECT_ID}" --replication-policy automatic
+    # データ所在地を国内に寄せるため、自動レプリケーションではなくリージョン指定にする
+    # (詳細設計書 §11)。作成後に変更できない属性なので、最初から正しく作る。
+    gcloud secrets create "${secret}" --project "${PROJECT_ID}" \
+      --replication-policy user-managed --locations "${REGION}" --labels app=seido-watch
     echo "  作成しました: ${secret}"
   fi
 done
@@ -181,6 +232,7 @@ cat <<EOF
 
       GCP_PROJECT_ID           ${PROJECT_ID}
       GCP_REGION               ${REGION}
+      GCP_FIRESTORE_LOCATION   ${REGION}
       GCP_WIF_PROVIDER         ${PROVIDER_NAME}
       GCP_DEPLOY_SA            ${DEPLOY_SA_EMAIL}
       TF_STATE_BUCKET          ${STATE_BUCKET}
@@ -189,11 +241,22 @@ cat <<EOF
 
       gh variable set GCP_PROJECT_ID   --body "${PROJECT_ID}"   --repo ${GITHUB_REPO}
       gh variable set GCP_REGION       --body "${REGION}"       --repo ${GITHUB_REPO}
+      gh variable set GCP_FIRESTORE_LOCATION --body "${REGION}" --repo ${GITHUB_REPO}
       gh variable set GCP_WIF_PROVIDER --body "${PROVIDER_NAME}" --repo ${GITHUB_REPO}
       gh variable set GCP_DEPLOY_SA    --body "${DEPLOY_SA_EMAIL}" --repo ${GITHUB_REPO}
       gh variable set TF_STATE_BUCKET  --body "${STATE_BUCKET}" --repo ${GITHUB_REPO}
 
+**[1] と [2] は push より先に済ませてください。**
+Cloud Run Jobs はジョブ作成時にシークレットの値の存在を検証するため、
+値の投入前に push するとジョブの作成で失敗します。
+
 以降、main ブランチへ push するたびに自動でデプロイされます。
 手動で走らせたい場合は GitHub の Actions タブから「デプロイ」を Run workflow してください。
+
+初回デプロイが通ったら、手元で次を実行し、生成される .terraform.lock.hcl を
+コミットしてください(プロバイダのバージョンを固定するため)。
+
+  cd infra/terraform
+  terraform init -backend-config="bucket=${STATE_BUCKET}" -backend-config="prefix=seido-watch"
 ================================================================================
 EOF
