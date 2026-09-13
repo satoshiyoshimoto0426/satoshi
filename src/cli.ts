@@ -28,11 +28,18 @@ import { runSummarize } from './pipeline/summarize.js';
 import { ConfigError } from './types.js';
 import type { AppContext, ChannelConfig, Logger, Run, SourceConfig } from './types.js';
 import { createLogger } from './util/logger.js';
+import { sleep } from './util/retry.js';
 import { isValidDateString, toJstDateString } from './util/time.js';
 
 // ---------------------------------------------------------------------------
 // 共通ヘルパ
 // ---------------------------------------------------------------------------
+
+/**
+ * `verify-sources --fix` を中止する NG 割合のしきい値。
+ * これを超える一斉 NG は、個々のソースではなく実行環境側のネットワーク障害を疑う。
+ */
+const FIX_ABORT_RATIO = 0.5;
 
 function errorMessage(e: unknown): string {
   if (e instanceof Error) return e.message;
@@ -154,7 +161,13 @@ async function verifySource(ctx: AppContext, source: SourceConfig): Promise<Veri
     };
   }
 
-  const reach = await ctx.http.checkReachable(url);
+  // 一過性の通信断で NG 判定しない。--fix が暴発して全ソースを無効化すると、
+  // 「監視していないのに正常に見える」最悪の状態が恒久化する。
+  let reach = await ctx.http.checkReachable(url);
+  if (!reach.ok && (reach.status === null || reach.status >= 500 || reach.status === 429)) {
+    await sleep(2000);
+    reach = await ctx.http.checkReachable(url);
+  }
   if (!reach.ok) {
     const status = reach.status === null ? '到達不可' : String(reach.status);
     return {
@@ -341,6 +354,7 @@ interface ApproveCliOptions {
 interface VerifySourcesCliOptions {
   source?: string[];
   fix?: boolean;
+  forceFix?: boolean;
 }
 interface PreviewCliOptions {
   date?: string;
@@ -496,6 +510,17 @@ program
       }
 
       const problems = validateCrossReferences(config.channels, config.sources);
+
+      // 有効ソースが 0 件なのは「問題なし」ではない。
+      // verify-sources --fix の暴発や一括無効化でこの状態になると、巡回対象が無いまま
+      // 毎朝「本日の新着はありません」が配信され、監視していないことに誰も気づけない。
+      if (enabled.length === 0) {
+        problems.push(
+          '有効なソースが 0 件です。この状態では新着を検知できず、毎朝「本日の新着はありません」が配信され続けます。' +
+            'config/sources/*.yaml の enabled を確認してください。',
+        );
+      }
+
       if (problems.length === 0) {
         console.log('OK 設定に問題はありません。');
       } else {
@@ -517,6 +542,7 @@ program
   .description('全ソースの到達確認とセレクタ検証(運用手順書 §8)')
   .option('--source <id...>', '対象ソース id。省略時は全ソース')
   .option('--fix', 'NG だったソースを enabled: false に書き換える')
+  .option('--force-fix', 'NG の割合が高くても書き換える(自分側の障害でないと確認できている場合のみ)')
   .action((options: VerifySourcesCliOptions) =>
     runCommand('verify-sources', async (logger) => {
       const ctx = await createContext({ logger });
@@ -538,12 +564,34 @@ program
       }
 
       if (options.fix === true && ng.length > 0) {
-        console.log('--fix: NG のソースを無効化します。');
-        const reasons = new Map(ng.map((row) => [row.sourceId, row.reason ?? row.status]));
-        applyFix(DEFAULT_CONFIG_DIR, reasons, dateJst, logger);
-        console.log(
-          '無効化したソースは URL / itemSelector を直して必ず有効に戻してください(運用手順書 §3.2)。',
-        );
+        // NG が多すぎるときは、ソース側ではなく自分側のネットワーク障害を疑う。
+        // プロキシ断・DNS 障害・社内ネットワークの瞬断では全件が NG になり、
+        // そのまま書き換えると全ソースが無効化される。そうなると巡回対象 0 件のまま
+        // 毎朝「本日の新着はありません」が配信され続け、誰も異常に気づけない。
+        const ngRatio = ng.length / rows.length;
+        if (ngRatio > FIX_ABORT_RATIO && options.forceFix !== true) {
+          console.log('');
+          console.log(
+            `--fix: NG が ${ng.length}/${rows.length} 件(${Math.round(ngRatio * 100)}%)と多いため、書き換えを中止しました。`,
+          );
+          console.log('これだけ一斉に失敗するのは、個々のソースではなく実行環境側の');
+          console.log('ネットワーク障害(プロキシ・DNS・egress ポリシー)である可能性が高いためです。');
+          console.log('ネットワークを確認し、復旧後にもう一度実行してください。');
+          console.log(
+            `本当に全件を無効化したい場合は --force-fix を付けてください(しきい値 ${Math.round(FIX_ABORT_RATIO * 100)}% を無視します)。`,
+          );
+          logger.error('NG の割合が高いため --fix を中止しました', {
+            ng: ng.length,
+            total: rows.length,
+          });
+        } else {
+          console.log('--fix: NG のソースを無効化します。');
+          const reasons = new Map(ng.map((row) => [row.sourceId, row.reason ?? row.status]));
+          applyFix(DEFAULT_CONFIG_DIR, reasons, dateJst, logger);
+          console.log(
+            '無効化したソースは URL / itemSelector を直して必ず有効に戻してください(運用手順書 §3.2)。',
+          );
+        }
       }
 
       logger.info('ソースを検証しました', { total: rows.length, ng: ng.length, fixed: options.fix === true });

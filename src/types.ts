@@ -99,6 +99,16 @@ export interface RuntimeConfig {
   httpTimeoutMs: number;
   /** 1 ソースあたりの 1 回の巡回で取り込む新規アイテム上限。 */
   maxNewItemsPerSource: number;
+  /**
+   * 1 ソースあたり 1 回の巡回で「本文を取り直す既知アイテム」の上限。
+   *
+   * 一覧のリンク文字列が変わらないまま本文だけ差し替わるページ
+   * (「◯◯について」に Q&A 第3報が追記される等)は、一覧の変化を見るだけでは
+   * 永久に検知できない。かといって既知 URL を毎回全件取り直すと、
+   * 同一ホスト 2 秒間隔(NFR-07)と掛け算になって巡回が終わらない。
+   * そこで毎回少数だけ、最後に更新を確認してから最も時間が経ったものから取り直す。
+   */
+  recheckPerSource: number;
   /** items.contentText の最大保存文字数。 */
   maxContentChars: number;
   /** 監査データの保持日数(FR-16)。 */

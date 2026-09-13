@@ -83,6 +83,18 @@ const REDELIVER_MIN_INTERVAL_DAYS = 7;
  */
 const CARRY_OVER_DAYS = 3;
 
+/**
+ * 更新記事をさかのぼって探す日数。
+ *
+ * 7 日ルール(REDELIVER_MIN_INTERVAL_DAYS)は再掲を「遅らせる」ためのものであって
+ * 「捨てる」ためのものではない。ところが更新の検出をその日のウィンドウだけで行うと、
+ * 配信直後に更新された記事は 7 日ルールで弾かれ、翌日以降は updatedAt がウィンドウ外に
+ * なるため二度と拾われない。報酬改定 Q&A の追補や様式差替えなど、見落とすと最も痛い
+ * 更新がここに落ちる。そこで更新の検出はこの日数だけさかのぼり、
+ * 「7 日経った日」に改めて候補へ戻す。
+ */
+const UPDATE_LOOKBACK_DAYS = REDELIVER_MIN_INTERVAL_DAYS + 7;
+
 /** 分類済みであることが確定したアイテム。null チェックを 1 度で済ませるための内部型。 */
 interface Candidate {
   item: Item;
@@ -182,12 +194,33 @@ function lastDigestedDate(item: Item, channelId: string): string | null {
  *  2. 直近 REDELIVER_MIN_INTERVAL_DAYS 日のあいだ、このチャネルで配信していないこと。
  *     軽微な更新の再掲を防ぐ。
  */
-function isRedeliverableUpdate(item: Item, channel: ChannelConfig, dateJst: string): boolean {
+function isRedeliverableUpdate(
+  item: Item,
+  channel: ChannelConfig,
+  dateJst: string,
+  windowFrom: string,
+): boolean {
   if (item.classifiedAt === null) return false;
   if (item.classifiedAt < item.updatedAt) return false;
 
   const last = lastDigestedDate(item, channel.id);
-  if (last === null) return true;
+  if (last === null) {
+    // このチャネルで一度も配信していないものは「再掲」ではない。
+    // 直近 24 時間に更新されたものだけをここで拾い、それより古い未配信分は
+    // 繰り越し(CARRY_OVER_DAYS)の担当にする。ここで広く拾うと、
+    // 繰り越しの上限日数が実質無効になり、古い記事がいつまでも候補に残る。
+    return item.updatedAt >= windowFrom;
+  }
+
+  // 最終配信日より後に更新されたものだけを再掲の対象にする。
+  // これが無いと、更新されていない古い記事まで 7 日ごとに再掲されてしまう。
+  // 配信日は JST 日付までしか分からないので、その日の終わり(翌日 00:00 JST = 前日 15:00Z)と比べる。
+  const lastDeliveredEnd = addDays(`${last}T15:00:00.000Z`, 0);
+  if (item.updatedAt <= lastDeliveredEnd) return false;
+
+  // 7 日ルールは再掲を「遅らせる」ためのもの。まだ 7 日経っていない日は見送るが、
+  // 更新の検出自体を UPDATE_LOOKBACK_DAYS だけさかのぼっているので、
+  // 7 日経った日に改めてここへ来て true になる(捨てられない)。
   // addDays は ISO8601 を扱うので、日付だけの比較用に 00:00Z を補って計算する。
   const earliest = addDays(`${last}T00:00:00.000Z`, REDELIVER_MIN_INTERVAL_DAYS).slice(0, 10);
   return dateJst >= earliest;
@@ -202,7 +235,7 @@ function selectCandidates(
   channel: ChannelConfig,
   digestId: string,
   log: Logger,
-): Candidate[] {
+): { candidates: Candidate[]; unclassified: number } {
   // 要件定義書 §5.4: 自治体ページが国の通知を転載しただけのものは、国側を優先して落とす。
   // 「国側のアイテムが同じウィンドウに存在するか」でしか判定できないため、
   // 国のアイテム(region === null)が 1 件も無い日は転載側を残す(情報の欠落を防ぐ)。
@@ -210,16 +243,26 @@ function selectCandidates(
 
   const candidates: Candidate[] = [];
   let duplicateOfNational = 0;
+  let unclassified = 0;
 
   for (const item of windowItems) {
     const classification = item.classification;
-    if (classification === null) continue; // 未分類は対象外(次回の classify を待つ)
+    if (classification === null) {
+      // 未分類は対象外だが、黙って捨ててはいけない。
+      // AI の分類が終日失敗すると全アイテムがここに落ち、対象 0 件 =「新着なし」として
+      // 配信されてしまう。件数を呼び出し元へ返し、0 件判定の前に障害かどうかを見分ける。
+      unclassified += 1;
+      continue;
+    }
     if (!classification.channels.includes(channel.id)) continue;
     if (classification.relevance < channel.relevanceThreshold) continue;
     // 同じダイジェストに二度載せない(再実行しても本文が膨らまない)。
     if (item.digestedIn.includes(digestId)) continue;
 
-    if (classification.isDuplicateOfNational && hasNationalItem) {
+    // 転載除外は「自治体のページが国の通知をそのまま載せているだけ」の重複を防ぐためのもの。
+    // region が null のアイテム(= 国のソースで初検知したもの)には適用しない。
+    // 適用すると、国の通知そのものが「自治体の転載」として無言で落ちる事故になる。
+    if (classification.isDuplicateOfNational && item.region !== null && hasNationalItem) {
       duplicateOfNational += 1;
       continue;
     }
@@ -230,7 +273,10 @@ function selectCandidates(
   if (duplicateOfNational > 0) {
     log.info('国の通知の転載とみなしたアイテムを除外しました', { count: duplicateOfNational });
   }
-  return candidates;
+  if (unclassified > 0) {
+    log.warn('未分類のままのアイテムがあります', { count: unclassified });
+  }
+  return { candidates, unclassified };
 }
 
 /** 重要度 desc → 関連度 desc → 検知が新しい順。最後の 2 つは結果を決定的にするための同値解消。 */
@@ -471,9 +517,16 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
   // 繰り越し用に、ウィンドウ開始より CARRY_OVER_DAYS 日さかのぼった範囲も引く。
   const carryWindow = { from: addDays(job.window.from, -CARRY_OVER_DAYS), to: job.window.from };
 
+  // 更新の検出はウィンドウより広くさかのぼる(理由は UPDATE_LOOKBACK_DAYS のコメント)。
+  const updateWindow = {
+    from: addDays(job.window.from, -UPDATE_LOOKBACK_DAYS),
+    to: job.window.to,
+    field: 'updatedAt' as const,
+  };
+
   const [freshItems, touchedItems, carryItems] = await Promise.all([
     ctx.store.listItemsInWindow(job.window),
-    ctx.store.listItemsInWindow({ ...job.window, field: 'updatedAt' }),
+    ctx.store.listItemsInWindow(updateWindow),
     ctx.store.listItemsInWindow(carryWindow),
   ]);
 
@@ -492,23 +545,25 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
     const item = forgetOwnMark(touched);
     if (byId.has(item.id)) continue; // 新着として既に入っている
     if (item.detectedAt >= job.window.from) continue; // ウィンドウ内の新着(取りこぼし防止の保険)
-    if (!isRedeliverableUpdate(item, channel, dateJst)) continue;
+    if (!isRedeliverableUpdate(item, channel, dateJst, job.window.from)) continue;
     byId.set(item.id, item);
     updatedPicked += 1;
   }
+
   if (updatedPicked > 0) {
     log.info('内容が更新された既知アイテムを候補に加えました', { count: updatedPicked });
   }
 
   // 繰り越し: 直近数日のうち、このチャネルで一度も配信していないアイテムを候補に戻す。
   // 「まだ誰にも届いていない」ものだけが対象なので、同じ記事が繰り返し配信されることはない。
-  const channelPrefix = `${channel.id}_`;
   let carriedOver = 0;
   for (const carried of carryItems) {
     const item = forgetOwnMark(carried);
     if (byId.has(item.id)) continue;
     // このチャネルで配信済みなら対象外(他チャネルでの配信は関係ない)。
-    if (item.digestedIn.some((id) => id.startsWith(channelPrefix))) continue;
+    // 単純な接頭辞一致では、チャネル id が別 id の接頭辞になっているとき
+    //(welfare と welfare_child)に取り違える。lastDigestedDate と同じ判定に揃える。
+    if (lastDigestedDate(item, channel.id) !== null) continue;
     byId.set(item.id, item);
     carriedOver += 1;
   }
@@ -522,7 +577,7 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
   const windowItems = [...byId.values()].sort((a, b) =>
     a.detectedAt < b.detectedAt ? -1 : a.detectedAt > b.detectedAt ? 1 : a.id < b.id ? -1 : 1,
   );
-  const candidates = selectCandidates(windowItems, channel, digestId, log);
+  const { candidates, unclassified } = selectCandidates(windowItems, channel, digestId, log);
 
   // --- 4. 重要度 → 関連度 で並べ、上位 20 件だけを AI に渡す --------------------
   const sorted = [...candidates].sort(compareCandidates);
@@ -533,6 +588,7 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
   log.info('ダイジェスト対象を絞り込みました', {
     windowItems: windowItems.length,
     candidates: candidates.length,
+    unclassified,
     targets: targets.length,
     omittedByCap,
   });
@@ -541,6 +597,46 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
 
   // --- 5. 0 件の日 ------------------------------------------------------------
   if (targets.length === 0) {
+    // 未分類のアイテムが残っている状態で「新着なし」と配信してはいけない。
+    //
+    // AI の分類が終日失敗すると(API 障害・スキーマ不適合など)、巡回で取れた
+    // アイテムはすべて classification: null のままここに落ちる。その結果
+    // 「対象 0 件 = 新着なし」と判断され、受信者には「監視は正常、ただ新着が無い日」
+    // として届く。品質ゲート全滅を failed にしているのと同じ理由で、ここも障害扱いにする。
+    // 報酬改定の公表日に AI が落ちていれば、その日の情報がまるごと失われる。
+    if (unclassified > 0) {
+      const failed = buildDigest(ctx, channel, dateJst, digestId, existing, {
+        entries: [],
+        excluded: [],
+        omittedCount: unclassified,
+        isEmpty: false, // アイテムはあった。「新着なし」ではない。
+        coverage,
+        messageText: '', // 配信してはいけないので本文は作らない。
+        status: 'failed',
+        model: ctx.config.runtime.anthropicModel,
+        prompt: '',
+        rawResponse: '',
+        usage: null,
+      });
+      await ctx.store.putDigest(failed);
+
+      const message =
+        `${channel.id}: ウィンドウ内に未分類のアイテムが ${unclassified} 件残っています` +
+        '(AI 分類の失敗が疑われます)';
+      job.onError(message);
+      log.error('未分類アイテムが残っているため「新着なし」を配信しません', {
+        digestId,
+        unclassified,
+      });
+      await safeNotify(ctx, log, 'error', `ダイジェストを配信できません(${channel.name})`, [
+        message,
+        `対象日: ${dateJst}`,
+        '分類が終わっていないため「本日の新着はありません」とは配信しません。',
+        'collect を再実行して分類を完了させたうえで、summarize --force を実行してください。',
+      ]);
+      return 'failed';
+    }
+
     await putEmptyDigest(job, digestId, existing, coverage);
     return 'ok';
   }
@@ -630,14 +726,20 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
     rawResponse: meta.rawResponse,
     usage: meta.usage,
   });
-  await ctx.store.putDigest(digest);
-
   // --- 8. 再利用防止: 実際に本文へ載った項目だけを「使用済み」にする ------------
   // 品質ゲートや文字数調整で落ちた項目は配信されていないので、次回以降の候補に残す。
+  //
+  // **putDigest より先に行う。** 順序を逆にすると、digest が status='generated' で
+  // 保存された後に印付けが失敗した場合、deliver はその digest を配信する一方で
+  // item に印が付かず、翌日の繰り越しが同じ記事をもう一度拾って二重配信になる(FR-03 違反)。
+  // 印付けが先なら、失敗しても「配信していないのに印が付く」ことはあっても
+  // 「配信したのに印が付かない」ことは起きない(前者は取りこぼしだが、通知で気づける)。
   const usedItemIds = [...new Set(fitted.entries.map((entry) => entry.itemId))];
   if (usedItemIds.length > 0) {
     await ctx.store.markItemsDigested(usedItemIds, digestId);
   }
+
+  await ctx.store.putDigest(digest);
 
   counts.digestsGenerated += 1;
   counts.excluded += gate.excluded.length;

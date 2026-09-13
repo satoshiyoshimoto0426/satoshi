@@ -23,6 +23,7 @@ import {
   makeItem,
   mutableClock,
 } from './helpers/fakes.js';
+import { fixedClock } from '../src/util/clock.js';
 import type { MakeContextOptions, TestContext } from './helpers/fakes.js';
 
 /** 既定時刻(JST 2026-09-13 07:30)における対象ウィンドウ。 */
@@ -50,15 +51,15 @@ function emptyCounts(): RunCounts {
 }
 
 /** 当日の collect 実行記録。coverage(§9.1)の数字の元になる。 */
-function collectRun(): Run {
+function collectRun(date: string = DEFAULT_DATE_JST): Run {
   return {
-    id: 'run-collect-0001',
+    id: `run-collect-${date}`,
     job: 'collect',
     startedAt: '2026-09-12T21:00:00.000Z',
     finishedAt: '2026-09-12T21:05:00.000Z',
     status: 'succeeded',
     counts: { ...emptyCounts(), sourcesTotal: 4, sourcesSucceeded: 4 },
-    date: DEFAULT_DATE_JST,
+    date,
     errors: [],
     expiresAt: '2026-12-11T21:00:00.000Z',
   };
@@ -97,15 +98,19 @@ describe('runSummarize: 対象ウィンドウ(詳細設計書 §6.2)', () => {
     // 対象日 2026-09-13 のウィンドウは JST 09-12 07:00 〜 09-13 07:00。
     expect(digestWindow(DEFAULT_DATE_JST, '07:00')).toEqual({ from: WINDOW_FROM, to: WINDOW_TO });
 
-    // ウィンドウ前後のアイテムは「配信済み」にしておく。
-    // 未配信のものは繰り越し(CARRY_OVER_DAYS)で拾われる仕様なので、
-    // ここで見たいウィンドウ境界そのものが判定できなくなるため。
-    const digestedElsewhere = ['welfare_2026-09-01'];
-    const justBefore = item(1, { detectedAt: '2026-09-11T21:59:59.999Z', digestedIn: digestedElsewhere });
+    // ウィンドウ前後のアイテムは「検知した翌日に配信済み」にしておく。
+    // 未配信のものは繰り越し(CARRY_OVER_DAYS)で拾われ、
+    // 配信後に更新されたものは再掲の対象になる仕様なので、
+    // そのどちらでもない状態にしないとウィンドウ境界そのものを判定できない。
+    // (検知より前の日付で配信済みにすると現実に起こり得ない状態になるので避ける)
+    const justBefore = item(1, {
+      detectedAt: '2026-09-11T21:59:59.999Z',
+      digestedIn: ['welfare_2026-09-12'],
+    });
     const atFrom = item(2, { detectedAt: WINDOW_FROM });
     const inside = item(3, { detectedAt: INSIDE });
     const justBeforeTo = item(4, { detectedAt: '2026-09-12T21:59:59.999Z' });
-    const atTo = item(5, { detectedAt: WINDOW_TO, digestedIn: digestedElsewhere });
+    const atTo = item(5, { detectedAt: WINDOW_TO, digestedIn: ['welfare_2026-09-13'] });
 
     const ctx = setup([justBefore, atFrom, inside, justBeforeTo, atTo]);
     await runSummarize(ctx, { date: DEFAULT_DATE_JST });
@@ -161,6 +166,51 @@ describe('runSummarize: 対象ウィンドウ(詳細設計書 §6.2)', () => {
     await runSummarize(ctx, { date: DEFAULT_DATE_JST });
 
     expect(aiInputIds(ctx)).toEqual([inWindow.id, sentOnOtherChannel.id].sort());
+  });
+
+  // -------------------------------------------------------------------------
+  // 更新の再掲は「遅らせる」ものであって「捨てる」ものではない
+  //
+  // 配信直後に更新された記事を 7 日ルールで弾いたまま忘れると、
+  // 翌日以降は updatedAt がウィンドウ外になり二度と拾われない。
+  // 報酬改定 Q&A の追補や様式差替えなど、見落とすと最も痛い更新がここに落ちる。
+  // -------------------------------------------------------------------------
+
+  it('配信直後の更新は当日は見送るが、7 日後に必ず再掲される', async () => {
+    const base = {
+      detectedAt: '2026-09-05T01:00:00.000Z',
+      // 9/10 に配信済み。その後 9/11 に本文が更新され、再分類も済んでいる。
+      digestedIn: ['welfare_2026-09-10'],
+      updatedAt: '2026-09-11T02:00:00.000Z',
+      classifiedAt: '2026-09-11T03:00:00.000Z',
+    };
+
+    // 9/13(最終配信から 3 日)はまだ見送る。
+    const soon = setup([item(1, base)]);
+    await runSummarize(soon, { date: '2026-09-13' });
+    expect(aiInputIds(soon)).toEqual([]);
+
+    // 9/17(最終配信から 7 日)で再掲される。更新が捨てられていないこと。
+    const later = setup([item(1, base)], { clock: fixedClock('2026-09-16T23:00:00.000Z') });
+    later.store.seed({ runs: [collectRun('2026-09-17')] });
+    await runSummarize(later, { date: '2026-09-17' });
+    expect(aiInputIds(later)).toEqual([item(1, base).id]);
+  });
+
+  it('更新されていない配信済み記事は 7 日経っても再掲しない', async () => {
+    // updatedAt が最終配信日より前 = 配信後に何も変わっていない。
+    const untouched = item(1, {
+      detectedAt: '2026-09-05T01:00:00.000Z',
+      updatedAt: '2026-09-05T01:00:00.000Z',
+      classifiedAt: '2026-09-05T02:00:00.000Z',
+      digestedIn: ['welfare_2026-09-10'],
+    });
+
+    const ctx = setup([untouched], { clock: fixedClock('2026-09-16T23:00:00.000Z') });
+    ctx.store.seed({ runs: [collectRun('2026-09-17')] });
+    await runSummarize(ctx, { date: '2026-09-17' });
+
+    expect(aiInputIds(ctx)).toEqual([]);
   });
 
   it('繰り越し期間より古いものは拾わない(無限に溜め込まない)', async () => {

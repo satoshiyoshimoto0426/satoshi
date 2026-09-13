@@ -30,6 +30,7 @@ function runtimeConfig(over: Partial<RuntimeConfig> = {}): RuntimeConfig {
     hostConcurrency: 4,
     httpTimeoutMs: 20_000,
     maxNewItemsPerSource: 50,
+    recheckPerSource: 5,
     maxContentChars: 6000,
     retentionDays: 90,
     slackWebhookUrl: null,

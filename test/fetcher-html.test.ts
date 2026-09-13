@@ -385,6 +385,7 @@ function testRuntime(): RuntimeConfig {
     hostConcurrency: 4,
     httpTimeoutMs: 5_000,
     maxNewItemsPerSource: 50,
+    recheckPerSource: 5,
     maxContentChars: 6_000,
     retentionDays: 90,
     slackWebhookUrl: null,

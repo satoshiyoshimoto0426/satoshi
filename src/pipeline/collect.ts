@@ -368,25 +368,42 @@ export async function runCollect(ctx: AppContext, opts?: CollectOptions): Promis
     candidate: NormalizedCandidate,
     now: string,
     expiresAt: string,
-  ): Promise<void> {
-    const titleChanged = candidate.title !== '' && candidate.title !== previous.title;
-    const publishedChanged = candidate.publishedAt !== null && candidate.publishedAt !== previous.publishedAt;
-    if (!titleChanged && !publishedChanged) return;
+    force = false,
+  ): Promise<boolean> {
+    // items は URL 単位でグローバルに一意(id = sha256(canonicalUrl))。
+    // そのため「別のソースの一覧に同じ URL が載っていた」場合もここへ来る。
+    // 典型は、厚労省の通知 URL を自治体ページが転載しているケース。
+    // 初検知したソース(= sourceId)の属性を、あとから来た別ソースで上書きしてはいけない。
+    const sameSource = previous.sourceId === source.id;
+
+    const titleChanged = sameSource && candidate.title !== '' && candidate.title !== previous.title;
+    const publishedChanged =
+      sameSource && candidate.publishedAt !== null && candidate.publishedAt !== previous.publishedAt;
+    if (!force && !titleChanged && !publishedChanged) return false;
 
     const extracted = await extractContent(candidate.canonicalUrl, ctx.http, runtime.maxContentChars);
-    const title = pickTitle(candidate.title, extracted.title, candidate.canonicalUrl);
+    // タイトルも初検知ソース由来のものを優先する。転載ページのリンク文字列
+    //(例「【国通知】…(厚生労働省のページへ)」)で上書きすると見出しが歪む。
+    const title = sameSource
+      ? pickTitle(candidate.title, extracted.title, candidate.canonicalUrl)
+      : previous.title;
     const contentHash = contentHashOf(extracted.text, title);
     const contentChanged = contentHash !== previous.contentHash;
 
     await ctx.store.putItem({
       ...previous,
       title,
-      publishedAt: candidate.publishedAt ?? previous.publishedAt,
+      publishedAt: sameSource ? (candidate.publishedAt ?? previous.publishedAt) : previous.publishedAt,
       updatedAt: now,
       contentHash,
       contentText: extracted.text,
       contentType: extracted.contentType,
-      region: source.region,
+      // region は初検知ソースのものを保持する。
+      // 国の通知 URL を自治体ページが転載しただけで region が「大阪府」に化けると、
+      // 品質ゲートが全国一律の改正に「大阪府:」を前置し、地域限定の話だと誤読させる。
+      // さらにその item が isDuplicateOfNational と判定されると、
+      // 国の通知そのものが「自治体の転載」として無言で落ちる。
+      region: sameSource ? source.region : previous.region,
       // 本文が変わったときだけ分類をリセットして再分類の対象に戻す。
       // 見出しの表記ゆれだけで再分類すると AI 呼び出しが無駄に増える(NFR-04)。
       classification: contentChanged ? null : previous.classification,
@@ -406,6 +423,7 @@ export async function runCollect(ctx: AppContext, opts?: CollectOptions): Promis
     } else {
       logger.debug('既知 URL の見出しのみ更新しました', { sourceId: source.id, itemId: previous.id });
     }
+    return true;
   }
 
   /** 候補リストを items に取り込む。戻り値は新規取り込み件数。 */
@@ -475,10 +493,50 @@ export async function runCollect(ctx: AppContext, opts?: CollectOptions): Promis
 
     // 4. 既知 URL の更新検知。bootstrap は「既知化」だけが目的なので行わない。
     if (!bootstrap) {
+      // 4a. 一覧側の見出し・掲載日が変わったものを取り直す(安価な入口)。
+      const knownCandidates: NormalizedCandidate[] = [];
+      // 4a で実際に取り直した id。4b は `existing` の(古い)スナップショットを見るため、
+      // ここで覚えておかないと同じアイテムを二重に取得・二重に計上してしまう。
+      const refetched = new Set<string>();
       for (const candidate of normalized) {
         const previous = existing.get(candidate.id);
         if (previous === undefined) continue;
-        await updateKnownItem(source, previous, candidate, now, expiresAt);
+        knownCandidates.push(candidate);
+        if (await updateKnownItem(source, previous, candidate, now, expiresAt)) {
+          refetched.add(candidate.id);
+        }
+      }
+
+      // 4b. 定期再チェック。
+      //
+      // 一覧のリンク文字列が変わらないまま本文だけ差し替わるページ
+      //(「◯◯について」に Q&A 第3報が追記される等)は 4a では永久に検知できない。
+      // 官公庁ではこれが更新の主要なパターンなので、放置すると
+      // 「更新は起きているのに誰にも届かない」状態が恒久化する(FR-02)。
+      // 全件取り直すと NFR-07 の 2 秒間隔と掛け算になるため、毎回少数だけ、
+      // 最後に確認してから最も時間が経ったものから順に取り直す。
+      const recheckLimit = runtime.recheckPerSource;
+      if (recheckLimit > 0 && knownCandidates.length > 0) {
+        const stale = knownCandidates
+          .map((candidate) => ({ candidate, previous: existing.get(candidate.id) }))
+          .filter(
+            (pair): pair is { candidate: NormalizedCandidate; previous: Item } => pair.previous !== undefined,
+          )
+          // updatedAt が古い順 = 最後に中身を確認してから時間が経っている順。
+          .sort((a, b) => (a.previous.updatedAt < b.previous.updatedAt ? -1 : 1))
+          .slice(0, recheckLimit);
+
+        for (const { candidate, previous } of stale) {
+          if (refetched.has(candidate.id)) continue; // 4a で取り直し済み
+          await updateKnownItem(source, previous, candidate, now, expiresAt, true);
+        }
+        if (stale.length > 0) {
+          logger.debug('既知アイテムの定期再チェックを実施しました', {
+            sourceId: source.id,
+            rechecked: stale.length,
+            known: knownCandidates.length,
+          });
+        }
       }
     }
 
@@ -593,7 +651,14 @@ export async function runCollect(ctx: AppContext, opts?: CollectOptions): Promis
 
   // --- 結果の確定 ----------------------------------------------------------
   const status: RunStatus = ((): RunStatus => {
-    if (counts.sourcesTotal > 0 && counts.sourcesFailed === counts.sourcesTotal) {
+    if (counts.sourcesTotal === 0) {
+      // 巡回対象が 1 件も無いのは「成功」ではない。
+      // verify-sources --fix の暴発や設定事故で全ソースが無効化されると、
+      // 巡回は成功・新着 0 件となり「監視は正常、新着なし」が配信され続ける。
+      // 監視していない状態が正常に見えるのが、このシステムで最も避けたい失敗。
+      return 'failed';
+    }
+    if (counts.sourcesFailed === counts.sourcesTotal) {
       // 全滅は「一部失敗」ではない。ネットワーク遮断や設定事故を partial に埋もれさせない。
       return 'failed';
     }
@@ -607,11 +672,21 @@ export async function runCollect(ctx: AppContext, opts?: CollectOptions): Promis
   run.errors = [...errors];
   await saveRun('終了時');
 
-  if (counts.sourcesFailed > 0) {
+  if (counts.sourcesTotal === 0) {
+    await notifySafe('error', 'collect: 巡回対象のソースが 1 件もありません', [
+      '有効なソースが 0 件です。設定が壊れているか、verify-sources --fix が暴発した可能性があります。',
+      '`pnpm cli validate-config` と config/sources/*.yaml の enabled を確認してください。',
+      'この状態では新着を検知できず、毎朝「本日の新着はありません」が配信され続けます。',
+    ]);
+  } else if (counts.sourcesFailed > 0) {
     await notifySafe(status === 'failed' ? 'error' : 'warn', 'collect: 巡回に失敗したソースがあります', [
       `${counts.sourcesTotal} ソース中 ${counts.sourcesFailed} ソースが失敗しました`,
       ...errors,
     ]);
+  } else if (errors.length > 0) {
+    // 巡回自体は全件成功でも、分類の失敗や新規上限の切り捨てはここに積まれる。
+    // 通知しないと、分類が終日失敗していても運用者は気づけない。
+    await notifySafe('warn', 'collect: 巡回中に処理できなかったものがあります', errors);
   }
 
   logger.info('巡回を終了しました', {

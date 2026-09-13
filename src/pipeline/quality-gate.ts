@@ -32,19 +32,39 @@ import type { AppContext, ChannelConfig, DigestEntry, ExcludedEntry, Item } from
  *   (URL に 'osusume' 等が含まれていても本文の表現ではない)。
  */
 export const BANNED_PATTERNS: RegExp[] = [
-  /すべき/, // 「〜すべきです」— 助言
+  // --- 助言・行動の指示 ---
+  /すべき/, // 「〜すべきです」
   /おすすめ/, // ひらがな表記の推奨
   /お勧め/, // 漢字表記の推奨
   /お薦め/, // 別表記の推奨
-  /しましょう/, // 「必ず確認しましょう」— 行動の指示
-  /と考えられ/, // 「〜と考えられます」— 推測
-  /と思われ/, // 「〜と思われます」— 推測
-  /でしょう/, // 「〜となるでしょう」— 推測・断定
-  /可能性が高い/, // 根拠のない蓋然性の評価
-  /有利です/, // 損得の評価(助言に直結する)
-  /推奨します/, // 明確な助言
-  /間違いありません/, // 断定
+  /しましょう/, // 「必ず確認しましょう」
+  /推奨(し|さ)/, // 「推奨します」「推奨されます」— 能動・受動の両方
+  /望ましい/, // 「早めの準備が望ましいです」
+  /必要があります/, // 「再提出が必要があります」
+  /必要です/, // 「体制届の再提出が必要です」
+  /注意が必要/, // 「返還リスクに注意が必要です」
+  /備えて(おく|くださ)/, // 行動の指示
+  // --- 推測・見込み ---
+  /と考えられ/,
+  /と思われ/,
+  /でしょう/,
+  /だろう/,
+  /とみられ/,
+  /と見られ/,
+  /見込みです/,
+  /見込まれ/,
+  /可能性が(あ|高)/, // 「可能性があります」「可能性が高い」
+  /おそれがあ/,
+  /恐れがあ/,
+  // --- 評価・断定 ---
+  /有利です/,
+  /不利です/,
+  /間違いありません/,
+  /実質的には/, // 原文にない解釈の踏み込み
 ];
+
+/** `affected` の最大文字数。ai/schemas.ts の AFFECTED_MAX_CHARS と一致させること。 */
+const AFFECTED_MAX_CHARS = 40;
 
 /** Q2 の到達確認タイムアウト(詳細設計書 §8: 10 秒)。 */
 const REACHABILITY_TIMEOUT_MS = 10_000;
@@ -256,7 +276,12 @@ function ensureRegionMentioned(entry: DigestEntry, region: string): DigestEntry 
   if (entry.headline.includes(pref) || entry.summary.includes(pref) || entry.affected.includes(pref)) {
     return entry;
   }
-  const affected = entry.affected.trim() === '' ? `${pref}内の事業所` : `${pref}: ${entry.affected}`;
+  const raw = entry.affected.trim() === '' ? `${pref}内の事業所` : `${pref}: ${entry.affected}`;
+  // ai/schemas.ts の AFFECTED_MAX_CHARS(40)を、補記でゲート自身が破らないようにする。
+  // 文字数はコードポイントで数える(サロゲートペアを割らない)。
+  const chars = [...raw];
+  const affected =
+    chars.length <= AFFECTED_MAX_CHARS ? raw : `${chars.slice(0, AFFECTED_MAX_CHARS - 1).join('')}…`;
   return { ...entry, affected };
 }
 

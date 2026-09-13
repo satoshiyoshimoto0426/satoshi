@@ -98,6 +98,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     httpTimeoutMs: readInt(env, 'HTTP_TIMEOUT_MS', 20000, 1),
     // 初回登録時の大量取込を防ぐ上限(詳細設計書 §6.1)。
     maxNewItemsPerSource: readInt(env, 'MAX_NEW_ITEMS_PER_SOURCE', 50, 1),
+    recheckPerSource: readInt(env, 'RECHECK_PER_SOURCE', 5, 0),
     maxContentChars: readInt(env, 'MAX_CONTENT_CHARS', 6000, 1),
     // 監査データの保持日数(FR-16)。
     retentionDays: readInt(env, 'RETENTION_DAYS', 90, 1),

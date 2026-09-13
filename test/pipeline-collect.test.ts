@@ -113,11 +113,52 @@ describe('runCollect: 新着の取り込みと重複排除(FR-03)', () => {
 
     expect(first.counts.newItems).toBe(2);
     expect(second.counts.newItems).toBe(0);
+    // 本文が変わっていないので「更新」にはならない。
     expect(second.counts.updatedItems).toBe(0);
     expect(idsAfterSecond).toEqual(idsAfterFirst);
     expect(ctx.store.dump().items).toHaveLength(2);
-    // 既知 URL は一覧の見出しが変わらない限り本文を取り直さない(NFR-07: 相手サイトへの負荷)。
-    expect(http.getCount(ARTICLE_A)).toBe(articleFetches);
+    // 定期再チェック(recheckPerSource)で本文は取り直されるが、
+    // 1 巡回あたりの件数は上限で抑えられている(NFR-07: 相手サイトへの負荷)。
+    const extra = http.getCount(ARTICLE_A) - articleFetches;
+    expect(extra).toBeGreaterThanOrEqual(0);
+    expect(extra).toBeLessThanOrEqual(ctx.config.runtime.recheckPerSource);
+  });
+
+  it('再チェックの上限が 0 なら既知 URL を取り直さない(負荷を完全に止められる)', async () => {
+    const { ctx, http } = setup({ runtime: { recheckPerSource: 0 } });
+
+    await runCollect(ctx);
+    const before = http.getCount(ARTICLE_A);
+    await runCollect(ctx);
+
+    expect(http.getCount(ARTICLE_A)).toBe(before);
+  });
+
+  it('一覧の見出しが変わらないまま本文だけ差し替わった更新を検知する(FR-02)', async () => {
+    // 官公庁の典型パターン: 「◯◯について」のリンク文字列はそのままで、
+    // ページ本体に Q&A 第3報や新様式が追記される。
+    // 一覧の変化だけを見ていると永久に検知できず、更新が誰にも届かない。
+    const clock = mutableClock('2026-09-12T21:00:00.000Z');
+    const { ctx, http } = setup({ clock });
+
+    await runCollect(ctx, { skipClassify: true });
+    const before = itemOf(ctx, ARTICLE_A);
+
+    // 一覧は一切変えず、本文だけ差し替える。
+    clock.set('2026-09-13T03:00:00.000Z');
+    http.setArticle(ARTICLE_A, `${BODY_A} 第4報を追加で公表しました。`);
+
+    const run = await runCollect(ctx, { skipClassify: true });
+    const after = itemOf(ctx, ARTICLE_A);
+
+    expect(run.counts.updatedItems).toBe(1);
+    expect(after.contentHash).not.toBe(before.contentHash);
+    expect(after.updatedAt).toBe('2026-09-13T03:00:00.000Z');
+    // 再分類の対象に戻る。
+    expect(after.classification).toBeNull();
+    expect(after.classifiedAt).toBeNull();
+    // 初検知時刻は据え置く。
+    expect(after.detectedAt).toBe(before.detectedAt);
   });
 
   it('utm 付き・http スキームの重複リンクは正規化で 1 件に集約される', async () => {

@@ -82,6 +82,18 @@ function normalizeUndefined(value: unknown): unknown {
   return value;
 }
 
+/**
+ * Firestore の NOT_FOUND(gRPC code 5)か。
+ * batch.update は対象が無いとバッチ全体を落とすため、個別に読み飛ばす判定に使う。
+ */
+function isNotFound(e: unknown): boolean {
+  if (typeof e !== 'object' || e === null) return false;
+  const code = (e as { code?: unknown }).code;
+  if (code === 5) return true;
+  const message = (e as { message?: unknown }).message;
+  return typeof message === 'string' && message.includes('NOT_FOUND');
+}
+
 /** TTL 対象フィールド名。Terraform の google_firestore_field と一致させること。 */
 const TTL_FIELD = 'expiresAt';
 
@@ -210,7 +222,23 @@ export function createFirestoreStore(projectId: string | null, databaseId: strin
         for (const id of idChunk) {
           batch.update(itemsCol.doc(id), { digestedIn: FieldValue.arrayUnion(digestId) });
         }
-        await batch.commit();
+        try {
+          await batch.commit();
+        } catch (e) {
+          // batch.update は対象ドキュメントが存在しないとバッチ全体を NOT_FOUND で落とす。
+          // TTL(90 日)で消えたアイテムが 1 件混ざっただけで、他の印付けまで巻き添えになる。
+          // 印が付かないまま digest が配信されると、翌日の繰り越しが同じ記事を拾い
+          // 二重配信になる(FR-03 違反)。memory 実装は存在しない ID を無視する仕様なので、
+          // 挙動を揃えるために 1 件ずつ再試行し、NOT_FOUND だけを読み飛ばす。
+          if (!isNotFound(e)) throw e;
+          for (const id of idChunk) {
+            try {
+              await itemsCol.doc(id).update({ digestedIn: FieldValue.arrayUnion(digestId) });
+            } catch (inner) {
+              if (!isNotFound(inner)) throw inner;
+            }
+          }
+        }
       }
     },
 
