@@ -135,10 +135,21 @@ function numberOrZero(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
+/**
+ * API キーらしき文字列を伏せる(NFR-03 / モジュール契約の原則 7)。
+ *
+ * 生応答は「モデルが書いた文字列」であって信用できる入力ではない。
+ * 認証エラーの本文をそのまま引用してくるなど、キーが紛れ込む経路は実在する。
+ * ログは Cloud Logging に長期保存されるため、出力する直前に必ずここを通す。
+ */
+function redactSecrets(text: string): string {
+  return text.replace(API_KEY_LIKE, '[REDACTED]');
+}
+
 /** 秘密情報が混ざらないように整形した、人間向けのエラー説明。 */
 function describeError(e: unknown): string {
   const text = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-  return text.replace(API_KEY_LIKE, '[REDACTED]');
+  return redactSecrets(text);
 }
 
 /** HTTP ステータスを取り出す。SDK の APIError だけでなく、素朴なモックの `{ status }` も拾う。 */
@@ -357,7 +368,7 @@ export function createAiClient(runtime: RuntimeConfig, logger: Logger, deps?: Ai
       log.error('AI 応答の JSON パースに失敗しました', {
         label: request.label,
         error: describeError(e),
-        rawResponse: rawResponse.slice(0, RAW_RESPONSE_LOG_CHARS),
+        rawResponse: redactSecrets(rawResponse.slice(0, RAW_RESPONSE_LOG_CHARS)),
       });
       throw aiErrorWithMeta(`AI 応答を JSON として解釈できませんでした: ${describeError(e)}`, meta);
     }
@@ -380,13 +391,14 @@ export function createAiClient(runtime: RuntimeConfig, logger: Logger, deps?: Ai
   ): T => {
     const result = schema.safeParse(parsed);
     if (result.success) return result.data;
-    const detail = result.error.issues
-      .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
-      .join(' / ');
+    // zod のメッセージは受け取った値を引用することがあるため、組み立てた時点で伏せる。
+    const detail = redactSecrets(
+      result.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join(' / '),
+    );
     log.error('AI 応答がスキーマに適合しませんでした', {
       label,
       detail,
-      rawResponse: meta.rawResponse.slice(0, RAW_RESPONSE_LOG_CHARS),
+      rawResponse: redactSecrets(meta.rawResponse.slice(0, RAW_RESPONSE_LOG_CHARS)),
     });
     throw aiErrorWithMeta(`AI 応答がスキーマに適合しませんでした: ${detail}`, meta);
   };
