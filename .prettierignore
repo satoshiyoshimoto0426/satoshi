@@ -7,3 +7,7 @@ pnpm-lock.yaml
 # 特に list-municipal-sjis.html は Shift_JIS で保存してあり、prettier が UTF-8 として
 # 読み書きすると内容が壊れる(自治体サイトの文字コード対策テストが無意味になる)。
 test/fixtures
+
+# 日本語のドキュメントは手で整形している。prettier の再折返しは
+# 表のずれや読みにくい改行を生むだけで価値がないため対象外にする。
+*.md

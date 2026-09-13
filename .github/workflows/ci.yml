@@ -44,6 +44,11 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # 整形差分も CI で落とす。手元で pnpm format を忘れると
+      # 無関係な整形差分がレビューに混ざり、本質的な変更が埋もれるため。
+      - name: 整形チェック
+        run: pnpm format:check
+
       - name: 型チェック
         run: pnpm typecheck
 
