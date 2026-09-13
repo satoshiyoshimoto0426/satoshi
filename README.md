@@ -115,6 +115,31 @@ DRY_RUN=true STORE_KIND=memory pnpm cli preview   --date 2026-09-12
 
 ---
 
+## デプロイ
+
+**`main` へ push すると自動でデプロイされます。**
+GitHub Actions が検証 → イメージのビルド → Terraform 適用 → 疎通確認(送信なし)まで行います。
+pull request では `terraform plan` の差分が出るだけで、適用はされません。
+
+初回だけ、`gcloud` にログインした端末で次を実行します。
+
+```bash
+export PROJECT_ID=<Google Cloud のプロジェクト ID>
+bash infra/bootstrap.sh      # API 有効化・状態バケット・権限・鍵なし認証・シークレットの箱
+bash scripts/set-secrets.sh  # トークンの値を投入(画面に表示されません)
+```
+
+最後に表示されるリポジトリ変数 5 つを GitHub の
+`Settings > Secrets and variables > Actions > Variables` に設定すれば完了です。
+
+認証はサービスアカウントキーではなく Workload Identity 連携を使うため、
+**鍵を GitHub に置きません。** トークンと API キーは Secret Manager にだけ入り、
+git にも CI にも残りません。
+
+詳細は [docs/04_運用手順書.md](docs/04_運用手順書.md) の §6 を参照してください。
+
+---
+
 ## 本番投入の前に必ず行うこと
 
 **`config/sources/*.yaml` の URL と CSS セレクタは実地検証できていません。**
@@ -148,6 +173,8 @@ src/
   pipeline/        collect / classify / summarize / quality-gate / deliver
   cli.ts           エントリポイント
 infra/terraform/   Cloud Run Jobs / Scheduler / Firestore / Secret Manager / 監視
+infra/bootstrap.sh デプロイ自動化の初期設定(1 回だけ実行)
+scripts/           シークレット投入などの運用スクリプト
 test/              ユニット・結合テスト
 ```
 

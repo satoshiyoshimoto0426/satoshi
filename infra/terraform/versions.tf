@@ -15,15 +15,18 @@ terraform {
   }
 
   # ------------------------------------------------------------------------
-  # tfstate はシークレットそのものは含まないが、プロジェクト構成が丸ごと入る。
-  # チームで運用する場合は下記コメントを外して GCS バックエンドを使うこと。
-  # バケットは事前に手動作成し、バージョニングを有効にしておく。
-  #   gcloud storage buckets create gs://<PROJECT_ID>-tfstate \
-  #     --location=asia-northeast1 --uniform-bucket-level-access
-  #   gcloud storage buckets update gs://<PROJECT_ID>-tfstate --versioning
+  # tfstate は GCS に置く(部分設定)。
+  #
+  # なぜリモートか: CI から terraform apply する構成なので、状態をローカルに置くと
+  # 実行のたびに状態を失い、毎回すべてを新規作成しようとして失敗する。
+  # バケット名はプロジェクトごとに違うためここには書かず、init 時に指定する。
+  #
+  #   terraform init \
+  #     -backend-config="bucket=<PROJECT_ID>-tfstate" \
+  #     -backend-config="prefix=seido-watch"
+  #
+  # バケットは infra/bootstrap.sh が作成する(バージョニング有効)。
+  # ローカルで状態を持ちたい場合のみ、このブロックをコメントアウトする。
   # ------------------------------------------------------------------------
-  # backend "gcs" {
-  #   bucket = "<PROJECT_ID>-tfstate"
-  #   prefix = "seido-watch"
-  # }
+  backend "gcs" {}
 }
