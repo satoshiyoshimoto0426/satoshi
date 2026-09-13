@@ -224,7 +224,7 @@ describe('パイプライン通し実行: 幻覚の遮断(品質ゲート Q1 / G
     expect(digest.excluded[0]?.check).toBe('Q1');
     expect(ctx.notifier.withTitle('品質ゲートで 1 件を除外しました')).toHaveLength(1);
     // 落とした分は「その他の新着 N 件」として受信者にも件数で伝える(FR-07)。
-    expect(text).toContain('その他の新着 1 件は管理画面で確認できます。');
+    expect(text).toContain('その他の新着 1 件は重要度が低いため割愛しました。');
   });
 
   it('出典 URL に到達できない項目は配信されない(FR-08 / Q2)', async () => {

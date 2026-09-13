@@ -253,8 +253,19 @@ export interface SourceState {
   lastError: string | null;
   /** 直近の巡回で検知した新規件数。 */
   lastNewCount: number;
+  /** 直近の巡回で一覧から取れた候補リンク数。0 が続くならセレクタ失効を疑う。 */
+  lastCandidateCount: number;
+  /**
+   * 候補リンクが 0 件だった巡回が何回続いているか。
+   * HTTP は 200 を返すのにセレクタが失効している「静かな故障」を検知するための指標。
+   * これが無いと、サイト改修でリンクが一切取れなくなっても巡回は成功扱いになり、
+   * 受信者には「正常に監視した結果、新着なし」と配信されてしまう(要件 G5)。
+   */
+  consecutiveEmpty: number;
   /** 連続失敗の警告を既に通知した回数(重複通知防止)。 */
   warnedAtFailureCount: number;
+  /** 候補 0 件の警告を既に通知した回数(重複通知防止)。 */
+  warnedAtEmptyCount: number;
 }
 
 export type JobName = 'collect' | 'summarize' | 'deliver';

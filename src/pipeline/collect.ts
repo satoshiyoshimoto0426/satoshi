@@ -37,6 +37,7 @@ import { itemIdFor, sha256 } from '../util/hash.js';
 import { addDays, isoOf, toJstDateString } from '../util/time.js';
 import { canonicalizeUrl, hostOf } from '../util/url.js';
 import { classifyPending } from './classify.js';
+import { EMPTY_WARN_THRESHOLD } from './coverage.js';
 
 export interface CollectOptions {
   /** 対象ソース ID。未指定なら有効な全ソース。 */
@@ -49,6 +50,9 @@ export interface CollectOptions {
 
 /** 連続失敗がこの回数以上になったら Slack 警告(詳細設計書 §12)。 */
 const FAILURE_WARN_THRESHOLD = 3;
+
+// 候補 0 件が何回続いたら警告するか。coverage.ts と同じ値を使う
+// (Slack の警告と「新着なし」文面の件数がずれないようにするため)。
 
 /** source_state.lastError / 通知に載せるメッセージの長さ上限(ログ肥大の防止)。 */
 const ERROR_TEXT_MAX = 300;
@@ -219,6 +223,18 @@ export async function runCollect(ctx: AppContext, opts?: CollectOptions): Promis
     newCount: number,
   ): Promise<void> {
     const now = isoOf(ctx.clock.now());
+
+    // 「静かな故障」の検知(要件 G5)。
+    // HTTP は 200 なのに一覧から候補リンクが 1 件も取れない状態は、
+    // サイト改修で itemSelector が失効した可能性が高い。これを成功として扱うと
+    // consecutiveFailures は 0 のまま、health にも Slack にも出ず、
+    // 受信者には「正常に監視した結果、新着なし」と配信されてしまう。
+    // 304(未更新)は一覧を取りに行っていないので 0 件でも異常ではない。
+    const empty = !result.notModified && result.candidates.length === 0;
+    const consecutiveEmpty = empty ? (previous?.consecutiveEmpty ?? 0) + 1 : 0;
+    const warnedAtEmpty = previous?.warnedAtEmptyCount ?? 0;
+    const shouldWarnEmpty = consecutiveEmpty >= EMPTY_WARN_THRESHOLD && warnedAtEmpty < consecutiveEmpty;
+
     await ctx.store.putSourceState({
       sourceId: source.id,
       lastFetchedAt: now,
@@ -228,12 +244,30 @@ export async function runCollect(ctx: AppContext, opts?: CollectOptions): Promis
       lastModified: result.lastModified ?? previous?.lastModified ?? null,
       lastError: null,
       lastNewCount: newCount,
+      lastCandidateCount: result.candidates.length,
+      consecutiveEmpty,
       // 復旧したら警告の抑止も解除する。次に 3 回連続で失敗したら再び通知したいため。
       warnedAtFailureCount: 0,
+      warnedAtEmptyCount: shouldWarnEmpty ? consecutiveEmpty : empty ? warnedAtEmpty : 0,
     });
+
+    if (empty) {
+      logger.warn('一覧から候補リンクを 1 件も取得できませんでした', {
+        sourceId: source.id,
+        consecutiveEmpty,
+      });
+    }
+    if (shouldWarnEmpty) {
+      await notifySafe('warn', 'collect: 候補が取れないソース(セレクタ失効の疑い)', [
+        `${source.name}(${source.id})は ${consecutiveEmpty} 回連続で候補 0 件です`,
+        `URL: ${displayUrlOf(source)}`,
+        'HTTP は成功しているため、一覧ページの構造変更で itemSelector が失効した可能性があります。',
+        '`pnpm cli verify-sources --source ' + source.id + '` で確認してください(運用手順書 §3.2)。',
+      ]);
+    }
   }
 
-  /** 失敗時の記録。consecutiveFailures を進め、閾値を超えたら 1 度だけ通知する。 */
+  /** 失敗時の記録。consecutiveFailures を進め、閾値を超えたら通知する。 */
   async function recordFailure(
     source: SourceConfig,
     previous: SourceState | null,
@@ -264,7 +298,10 @@ export async function runCollect(ctx: AppContext, opts?: CollectOptions): Promis
         lastModified: previous?.lastModified ?? null,
         lastError: message,
         lastNewCount: previous?.lastNewCount ?? 0,
+        lastCandidateCount: previous?.lastCandidateCount ?? 0,
+        consecutiveEmpty: previous?.consecutiveEmpty ?? 0,
         warnedAtFailureCount: shouldWarn ? failures : warnedAt,
+        warnedAtEmptyCount: previous?.warnedAtEmptyCount ?? 0,
       });
     } catch (stateError) {
       logger.warn('source_state の保存に失敗しました', {

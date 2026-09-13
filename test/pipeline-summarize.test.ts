@@ -97,11 +97,15 @@ describe('runSummarize: 対象ウィンドウ(詳細設計書 §6.2)', () => {
     // 対象日 2026-09-13 のウィンドウは JST 09-12 07:00 〜 09-13 07:00。
     expect(digestWindow(DEFAULT_DATE_JST, '07:00')).toEqual({ from: WINDOW_FROM, to: WINDOW_TO });
 
-    const justBefore = item(1, { detectedAt: '2026-09-11T21:59:59.999Z' });
+    // ウィンドウ前後のアイテムは「配信済み」にしておく。
+    // 未配信のものは繰り越し(CARRY_OVER_DAYS)で拾われる仕様なので、
+    // ここで見たいウィンドウ境界そのものが判定できなくなるため。
+    const digestedElsewhere = ['welfare_2026-09-01'];
+    const justBefore = item(1, { detectedAt: '2026-09-11T21:59:59.999Z', digestedIn: digestedElsewhere });
     const atFrom = item(2, { detectedAt: WINDOW_FROM });
     const inside = item(3, { detectedAt: INSIDE });
     const justBeforeTo = item(4, { detectedAt: '2026-09-12T21:59:59.999Z' });
-    const atTo = item(5, { detectedAt: WINDOW_TO });
+    const atTo = item(5, { detectedAt: WINDOW_TO, digestedIn: digestedElsewhere });
 
     const ctx = setup([justBefore, atFrom, inside, justBeforeTo, atTo]);
     await runSummarize(ctx, { date: DEFAULT_DATE_JST });
@@ -112,6 +116,62 @@ describe('runSummarize: 対象ウィンドウ(詳細設計書 §6.2)', () => {
     expect(digest.entries.map((e) => e.itemId).sort()).toEqual(
       [atFrom.id, inside.id, justBeforeTo.id].sort(),
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // 繰り越し(未配信のまま消えないこと)
+  //
+  // 件数上限・文字数上限・分類の遅れで本文に載らなかったアイテムは digestedIn が
+  // 付かないまま翌日のウィンドウから外れ、放置すると二度と配信されない。
+  // 「後手を踏まない」という本システムの目的に直接反するため、繰り越す。
+  // -------------------------------------------------------------------------
+
+  it('ウィンドウ前でも未配信なら繰り越して候補にする', async () => {
+    const inWindow = item(1, { detectedAt: INSIDE });
+    // ウィンドウ開始の 1 日前。まだどのダイジェストにも載っていない。
+    const leftOver = item(2, { detectedAt: '2026-09-11T10:00:00.000Z', digestedIn: [] });
+
+    const ctx = setup([inWindow, leftOver]);
+    await runSummarize(ctx, { date: DEFAULT_DATE_JST });
+
+    expect(aiInputIds(ctx)).toEqual([inWindow.id, leftOver.id].sort());
+  });
+
+  it('このチャネルで配信済みのものは繰り越さない(再配信しない)', async () => {
+    const inWindow = item(1, { detectedAt: INSIDE });
+    const alreadySent = item(2, {
+      detectedAt: '2026-09-11T10:00:00.000Z',
+      digestedIn: ['welfare_2026-09-12'],
+    });
+
+    const ctx = setup([inWindow, alreadySent]);
+    await runSummarize(ctx, { date: DEFAULT_DATE_JST });
+
+    expect(aiInputIds(ctx)).toEqual([inWindow.id]);
+  });
+
+  it('他チャネルでの配信は繰り越しを妨げない', async () => {
+    const inWindow = item(1, { detectedAt: INSIDE });
+    const sentOnOtherChannel = item(2, {
+      detectedAt: '2026-09-11T10:00:00.000Z',
+      digestedIn: ['ai_reskill_2026-09-12'],
+    });
+
+    const ctx = setup([inWindow, sentOnOtherChannel]);
+    await runSummarize(ctx, { date: DEFAULT_DATE_JST });
+
+    expect(aiInputIds(ctx)).toEqual([inWindow.id, sentOnOtherChannel.id].sort());
+  });
+
+  it('繰り越し期間より古いものは拾わない(無限に溜め込まない)', async () => {
+    const inWindow = item(1, { detectedAt: INSIDE });
+    // ウィンドウ開始の 4 日前 = CARRY_OVER_DAYS(3 日)より前。
+    const tooOld = item(2, { detectedAt: '2026-09-07T10:00:00.000Z', digestedIn: [] });
+
+    const ctx = setup([inWindow, tooOld]);
+    await runSummarize(ctx, { date: DEFAULT_DATE_JST });
+
+    expect(aiInputIds(ctx)).toEqual([inWindow.id]);
   });
 
   it('関連度がしきい値未満のもの・未分類のもの・他チャネル向けのものは対象にしない', async () => {

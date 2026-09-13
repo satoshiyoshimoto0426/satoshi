@@ -82,7 +82,10 @@ function sourceState(overrides: Partial<SourceState> = {}): SourceState {
     lastModified: null,
     lastError: null,
     lastNewCount: 0,
+    lastCandidateCount: 0,
+    consecutiveEmpty: 0,
     warnedAtFailureCount: 0,
+    warnedAtEmptyCount: 0,
     ...overrides,
   };
 }

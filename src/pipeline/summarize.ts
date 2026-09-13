@@ -68,6 +68,21 @@ const IMPORTANCE_RANK: Record<Importance, number> = { high: 3, medium: 2, low: 1
  */
 const REDELIVER_MIN_INTERVAL_DAYS = 7;
 
+/**
+ * 未配信のまま取り残されたアイテムを何日さかのぼって拾い直すか(繰り越し)。
+ *
+ * なぜ必要か:
+ *   ダイジェストの対象はその日のウィンドウに入るアイテムだけだが、
+ *   - AI 入力の上限 20 件を超えた分
+ *   - 文字数調整で本文から落ちた分
+ *   - 巡回には入ったが classify が追いつかず未分類だった分
+ *   はどれも digestedIn が付かないまま翌日のウィンドウから外れ、**二度と配信されない**。
+ *   報酬改定の公表日のように 1 日に大量に出る日ほど落ちるため、
+ *   「後手を踏まない」という本システムの目的に直接反する。
+ *   そこで、まだ一度も配信していないアイテムはこの日数だけ候補に戻す。
+ */
+const CARRY_OVER_DAYS = 3;
+
 /** 分類済みであることが確定したアイテム。null チェックを 1 度で済ませるための内部型。 */
 interface Candidate {
   item: Item;
@@ -453,9 +468,13 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
   // 新着(detectedAt がウィンドウ内)に加え、既知 URL の内容が更新されたもの
   // (updatedAt がウィンドウ内)も対象にする。detectedAt は初検知時刻のまま据え置かれるため、
   // 更新分は detectedAt のクエリでは拾えず、「更新は検知したが誰にも届かない」状態になる(FR-02)。
-  const [freshItems, touchedItems] = await Promise.all([
+  // 繰り越し用に、ウィンドウ開始より CARRY_OVER_DAYS 日さかのぼった範囲も引く。
+  const carryWindow = { from: addDays(job.window.from, -CARRY_OVER_DAYS), to: job.window.from };
+
+  const [freshItems, touchedItems, carryItems] = await Promise.all([
     ctx.store.listItemsInWindow(job.window),
     ctx.store.listItemsInWindow({ ...job.window, field: 'updatedAt' }),
+    ctx.store.listItemsInWindow(carryWindow),
   ]);
 
   // force での作り直しでは、この digest 自身が付けた「使用済み」印を無かったことにする。
@@ -479,6 +498,25 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
   }
   if (updatedPicked > 0) {
     log.info('内容が更新された既知アイテムを候補に加えました', { count: updatedPicked });
+  }
+
+  // 繰り越し: 直近数日のうち、このチャネルで一度も配信していないアイテムを候補に戻す。
+  // 「まだ誰にも届いていない」ものだけが対象なので、同じ記事が繰り返し配信されることはない。
+  const channelPrefix = `${channel.id}_`;
+  let carriedOver = 0;
+  for (const carried of carryItems) {
+    const item = forgetOwnMark(carried);
+    if (byId.has(item.id)) continue;
+    // このチャネルで配信済みなら対象外(他チャネルでの配信は関係ない)。
+    if (item.digestedIn.some((id) => id.startsWith(channelPrefix))) continue;
+    byId.set(item.id, item);
+    carriedOver += 1;
+  }
+  if (carriedOver > 0) {
+    log.info('未配信のまま残っていたアイテムを繰り越しました', {
+      count: carriedOver,
+      days: CARRY_OVER_DAYS,
+    });
   }
 
   const windowItems = [...byId.values()].sort((a, b) =>
@@ -555,9 +593,28 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
     return 'failed';
   }
 
+  // FR-07(件数上限)をコード側で強制する。
+  // プロンプトでも maxItems を指示しているが、AI の出力が指示どおりである保証は無い。
+  // 「機械的にあらゆる情報が流れてきて誰も追えなくなる」ことを防ぐのが本システムの
+  // 存在理由なので、件数は最後にプログラムで切る。
+  // 重要度の高い順に残し、溢れた分は黙って消さず「その他 N 件」に合算する。
+  const ranked = [...gate.entries].sort(
+    (a, b) => IMPORTANCE_RANK[b.importance] - IMPORTANCE_RANK[a.importance],
+  );
+  const keep = new Set(ranked.slice(0, channel.maxItems));
+  const capped = gate.entries.filter((entry) => keep.has(entry)); // 出力順は AI の並びを保つ
+  const omittedByItemCap = gate.entries.length - capped.length;
+  if (omittedByItemCap > 0) {
+    log.info('件数上限を超えた項目を「その他」に回しました', {
+      channelId: channel.id,
+      maxItems: channel.maxItems,
+      omitted: omittedByItemCap,
+    });
+  }
+
   // Q7(文字数)。落ちた分も含めて「その他 N 件」に合算する。
-  const omittedBase = raw.omittedCount + gate.excluded.length + omittedByCap;
-  const fitted = fitToLimit(channel, dateJst, gate.entries, omittedBase);
+  const omittedBase = raw.omittedCount + gate.excluded.length + omittedByCap + omittedByItemCap;
+  const fitted = fitToLimit(channel, dateJst, capped, omittedBase);
 
   const digest = buildDigest(ctx, channel, dateJst, digestId, existing, {
     entries: fitted.entries,

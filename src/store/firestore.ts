@@ -17,8 +17,13 @@
  * - 日時はすべて ISO8601 UTC の**文字列**として保存する(NFR-08)。Timestamp 型に
  *   しないのは、範囲クエリを文字列比較で素直に書け(ISO8601 は辞書順 = 時系列順)、
  *   ドメイン型 `Item` などとそのまま相互変換できるため。
+ * - **例外は `expiresAt` のみ。** Firestore の TTL ポリシーは Timestamp 型の
+ *   フィールドしか削除対象にしない。文字列のままだと 1 件も消えず、監査データが
+ *   無限に残る(FR-16 の 90 日保持と M3-05 に反する)。そのため書き込み時に
+ *   Timestamp へ変換し、読み戻し時に ISO 文字列へ戻す。
+ *   `expiresAt` で範囲クエリはしないので、文字列比較の利点は失われない。
  */
-import { FieldValue, Firestore } from '@google-cloud/firestore';
+import { FieldValue, Firestore, Timestamp } from '@google-cloud/firestore';
 import type { DocumentData, DocumentSnapshot, Query, Settings } from '@google-cloud/firestore';
 import type { Delivery, Digest, Item, ItemQuery, JobName, Run, SourceState, Store } from '../types.js';
 
@@ -77,9 +82,33 @@ function normalizeUndefined(value: unknown): unknown {
   return value;
 }
 
-/** ドメインオブジェクトを書き込み可能なドキュメントデータへ変換する。 */
+/** TTL 対象フィールド名。Terraform の google_firestore_field と一致させること。 */
+const TTL_FIELD = 'expiresAt';
+
+/**
+ * ドメインオブジェクトを書き込み可能なドキュメントデータへ変換する。
+ * `expiresAt` だけは Firestore の TTL が効くよう Timestamp に変換する。
+ */
 function toDocumentData(value: object): DocumentData {
-  return normalizeUndefined(value) as DocumentData;
+  const data = normalizeUndefined(value) as DocumentData;
+  const expires = data[TTL_FIELD];
+  if (typeof expires === 'string' && expires !== '') {
+    const parsed = new Date(expires);
+    // 壊れた日付で書き込み全体を落とさない。その場合は TTL が効かないだけに留める。
+    if (!Number.isNaN(parsed.getTime())) {
+      data[TTL_FIELD] = Timestamp.fromDate(parsed);
+    }
+  }
+  return data;
+}
+
+/** 読み戻し時に Timestamp の `expiresAt` を ISO8601 文字列へ戻す。 */
+function fromDocumentData<T>(data: DocumentData): T {
+  const expires = data[TTL_FIELD];
+  if (expires instanceof Timestamp) {
+    return { ...data, [TTL_FIELD]: expires.toDate().toISOString() } as T;
+  }
+  return data as T;
 }
 
 /** スナップショットをドメイン型へ戻す。存在しなければ null。 */
@@ -87,7 +116,7 @@ function fromSnapshot<T>(snapshot: DocumentSnapshot): T | null {
   if (!snapshot.exists) return null;
   const data = snapshot.data();
   if (data === undefined) return null;
-  return data as T;
+  return fromDocumentData<T>(data);
 }
 
 export function createFirestoreStore(projectId: string | null, databaseId: string): Store {
@@ -149,7 +178,7 @@ export function createFirestoreStore(projectId: string | null, databaseId: strin
         .orderBy('detectedAt')
         .limit(limit)
         .get();
-      return snapshot.docs.map((doc) => doc.data() as Item);
+      return snapshot.docs.map((doc) => fromDocumentData<Item>(doc.data()));
     },
 
     async listItemsInWindow(query: ItemQuery): Promise<Item[]> {
@@ -164,7 +193,7 @@ export function createFirestoreStore(projectId: string | null, databaseId: strin
         .where(field, '<', query.to)
         .orderBy(field)
         .get();
-      return snapshot.docs.map((doc) => doc.data() as Item);
+      return snapshot.docs.map((doc) => fromDocumentData<Item>(doc.data()));
     },
 
     /**
@@ -215,7 +244,7 @@ export function createFirestoreStore(projectId: string | null, databaseId: strin
     async listSourceStates(): Promise<SourceState[]> {
       // ソース数は数十件規模(詳細設計書 §4)なので全件取得でよい。
       const snapshot = await sourceStateCol.get();
-      return snapshot.docs.map((doc) => doc.data() as SourceState);
+      return snapshot.docs.map((doc) => fromDocumentData<SourceState>(doc.data()));
     },
 
     // ----------------------------------------------------------------- runs
@@ -234,7 +263,7 @@ export function createFirestoreStore(projectId: string | null, databaseId: strin
       let query: Query<DocumentData, DocumentData> = runsCol.where('date', '==', date);
       if (job !== undefined) query = query.where('job', '==', job);
       const snapshot = await query.orderBy('startedAt', 'desc').get();
-      return snapshot.docs.map((doc) => doc.data() as Run);
+      return snapshot.docs.map((doc) => fromDocumentData<Run>(doc.data()));
     },
   };
 }

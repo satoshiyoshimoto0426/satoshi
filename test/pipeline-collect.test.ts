@@ -58,7 +58,10 @@ function makeState(overrides: Partial<SourceState> = {}): SourceState {
     lastModified: null,
     lastError: null,
     lastNewCount: 0,
+    lastCandidateCount: 0,
+    consecutiveEmpty: 0,
     warnedAtFailureCount: 0,
+    warnedAtEmptyCount: 0,
     ...overrides,
   };
 }
@@ -435,5 +438,76 @@ describe('runCollect: 実行記録(NFR-06)', () => {
     expect(finished?.finishedAt).not.toBeNull();
     expect(finished?.date).toBe('2026-09-13');
     expect(ctx.store.dump().runs).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 静かな故障の検知(要件 G5)
+//
+// HTTP は 200 なのに一覧から候補リンクが 1 件も取れない = セレクタ失効の疑い。
+// これを「成功」として記録すると consecutiveFailures は 0 のままで health にも
+// Slack にも出ず、受信者には「正常に監視した結果、新着なし」と配信されてしまう。
+// 本番ソース 45 件のうち 42 件が HTML セレクタ依存なので、ここが塞がっていないと
+// 見落としに気づく手段が無くなる。
+// ---------------------------------------------------------------------------
+
+describe('runCollect: 候補 0 件(セレクタ失効)の検知', () => {
+  function emptySetup(): { ctx: TestContext; http: FakeHttpClient } {
+    const http = createFakeHttp({ lists: { [LIST_URL]: makeListHtml([]) } });
+    const ctx = makeContext({ http });
+    return { ctx, http };
+  }
+
+  it('候補 0 件でも失敗にはせず、consecutiveEmpty を進める', async () => {
+    const { ctx } = emptySetup();
+
+    const run = await runCollect(ctx, { skipClassify: true });
+
+    expect(run.status).toBe('succeeded');
+    expect(run.counts.sourcesFailed).toBe(0);
+
+    const state = await ctx.store.getSourceState('mhlw_news');
+    expect(state?.consecutiveEmpty).toBe(1);
+    expect(state?.consecutiveFailures).toBe(0);
+    expect(state?.lastCandidateCount).toBe(0);
+  });
+
+  it('候補が取れたら consecutiveEmpty は 0 に戻る', async () => {
+    const { ctx, http } = emptySetup();
+    await runCollect(ctx, { skipClassify: true });
+    expect((await ctx.store.getSourceState('mhlw_news'))?.consecutiveEmpty).toBe(1);
+
+    http.setList(LIST_URL, makeListHtml([{ href: ARTICLE_A, text: '報酬改定Q&A(第3報)の公表について' }]));
+    http.setArticle(ARTICLE_A, BODY_A);
+    await runCollect(ctx, { skipClassify: true });
+
+    const state = await ctx.store.getSourceState('mhlw_news');
+    expect(state?.consecutiveEmpty).toBe(0);
+    expect(state?.lastCandidateCount).toBe(1);
+  });
+
+  it('4 回連続(= まる 1 日)で警告を通知する。3 回目までは通知しない', async () => {
+    const { ctx } = emptySetup();
+
+    for (let i = 0; i < 3; i += 1) await runCollect(ctx, { skipClassify: true });
+    expect(ctx.notifier.calls.filter((c) => c.title.includes('候補が取れない'))).toHaveLength(0);
+
+    await runCollect(ctx, { skipClassify: true });
+
+    const warned = ctx.notifier.calls.filter((c) => c.title.includes('候補が取れない'));
+    expect(warned).toHaveLength(1);
+    expect(warned[0]?.level).toBe('warn');
+    expect(warned[0]?.lines.join('\n')).toContain('verify-sources');
+    expect((await ctx.store.getSourceState('mhlw_news'))?.consecutiveEmpty).toBe(4);
+  });
+
+  it('304(未更新)は候補 0 件でも異常としない', async () => {
+    const http = createFakeHttp({ lists: { [LIST_URL]: { status: 304, html: '' } } });
+    const ctx = makeContext({ http });
+
+    await runCollect(ctx, { skipClassify: true });
+
+    const state = await ctx.store.getSourceState('mhlw_news');
+    expect(state?.consecutiveEmpty).toBe(0);
   });
 });

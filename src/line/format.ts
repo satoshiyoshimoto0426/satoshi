@@ -102,7 +102,9 @@ export function formatDigestMessage(
 
   // FR-07: 絞り込みで落とした分は件数だけ知らせる。0 件なら行そのものを出さない。
   if (omittedCount > 0) {
-    blocks.push(`その他の新着 ${omittedCount} 件は管理画面で確認できます。`);
+    // 管理画面(M4-03)は未実装なので、存在しない場所へ案内しない。
+    // 「割愛した」とだけ伝え、必要なら運用者が preview / 監査データで確認する。
+    blocks.push(`その他の新着 ${omittedCount} 件は重要度が低いため割愛しました。`);
   }
 
   blocks.push(DISCLAIMER);

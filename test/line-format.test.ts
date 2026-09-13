@@ -126,7 +126,7 @@ describe('formatDigestMessage: 詳細設計書 §9 / 要件定義書 §11 のテ
       '　意見募集は 9/30 まで。',
       '　出典: https://public-comment.e-gov.go.jp/pcm1030.html',
       '',
-      'その他の新着 2 件は管理画面で確認できます。',
+      'その他の新着 2 件は重要度が低いため割愛しました。',
       '',
       '※本まとめはAIが公的情報を要約したものです。正確な内容は必ず出典をご確認ください。',
     ].join('\n');
@@ -214,7 +214,7 @@ describe('その他の新着 N 件(FR-07)', () => {
 
   it('omittedCount が 1 以上のときだけ出る', () => {
     const text = formatDigestMessage(CHANNEL, DATE, [makeEntry()], 3);
-    expect(text).toContain('その他の新着 3 件は管理画面で確認できます。');
+    expect(text).toContain('その他の新着 3 件は重要度が低いため割愛しました。');
   });
 });
 
@@ -353,7 +353,7 @@ describe('fitToLimit: 文字数上限への収め方', () => {
 
     expect(result.droppedCount).toBe(1);
     // AI が落とした 3 件 + 文字数で落とした 1 件 = 4 件。
-    expect(result.text).toContain('その他の新着 4 件は管理画面で確認できます。');
+    expect(result.text).toContain('その他の新着 4 件は重要度が低いため割愛しました。');
   });
 
   it('残る項目の順序は入力順のまま(重要度順に並べ替えない)', () => {

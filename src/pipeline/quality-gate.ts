@@ -233,6 +233,34 @@ async function checkReachability(
 }
 
 /**
+ * FR-18: 自治体由来の項目に地域名を必ず載せる。
+ *
+ * なぜ除外ではなく補記か:
+ *   「大阪府内の事業所だけに適用される独自加算」が地域表記なしで配信されると、
+ *   読者は全国の制度だと誤解する。これは誤情報と同じ害がある。
+ *   一方で除外してしまうと自治体情報そのものが届かなくなり、見落としを生む。
+ *   地域名は AI の推測ではなく設定(SourceConfig.region)由来の事実なので、
+ *   プログラムが補うのが最も安全で情報量も落ちない。
+ *
+ * region は '大阪府' または '大阪府(大阪市)' の形。先頭の都府県名だけを使う。
+ */
+function prefectureOf(region: string): string {
+  const m = /^[^((]+/.exec(region);
+  return (m === null ? region : m[0]).trim();
+}
+
+function ensureRegionMentioned(entry: DigestEntry, region: string): DigestEntry {
+  const pref = prefectureOf(region);
+  if (pref === '') return entry;
+  // 見出し・要点・対象のいずれかに都府県名が出ていれば、読者は地域限定だと分かる。
+  if (entry.headline.includes(pref) || entry.summary.includes(pref) || entry.affected.includes(pref)) {
+    return entry;
+  }
+  const affected = entry.affected.trim() === '' ? `${pref}内の事業所` : `${pref}: ${entry.affected}`;
+  return { ...entry, affected };
+}
+
+/**
  * 品質ゲートを適用する(詳細設計書 §8 の Q1〜Q5・Q8、および Q2 の到達確認)。
  * Q6(件数)と Q7(文字数)は配信本文の組み立てに関わるため summarize / line.format 側が担当する。
  */
@@ -274,8 +302,23 @@ export async function applyQualityGate(ctx: AppContext, input: GateInput): Promi
   survivors.sort((a, b) => a.index - b.index);
   rejected.sort((a, b) => a.index - b.index);
 
+  // FR-18: 自治体由来(region を持つソース)の項目には地域名を必ず載せる。
+  const regionByUrl = new Map(
+    input.items
+      .filter((item) => item.region !== null)
+      .map((item) => [item.canonicalUrl, item.region as string]),
+  );
+  let regionAnnotated = 0;
+  const entries = survivors.map((judged) => {
+    const region = regionByUrl.get(judged.entry.sourceUrl);
+    if (region === undefined) return judged.entry;
+    const annotated = ensureRegionMentioned(judged.entry, region);
+    if (annotated !== judged.entry) regionAnnotated += 1;
+    return annotated;
+  });
+
   const output: GateOutput = {
-    entries: survivors.map((judged) => judged.entry),
+    entries,
     excluded: rejected.map((r) => r.excluded),
   };
 
@@ -283,6 +326,7 @@ export async function applyQualityGate(ctx: AppContext, input: GateInput): Promi
     input: input.entries.length,
     passed: output.entries.length,
     excluded: output.excluded.length,
+    regionAnnotated,
     // どのチェックで落ちたかの内訳。AI の挙動が変わったときに最初に気づける指標。
     breakdown: output.excluded.reduce<Record<string, number>>((acc, e) => {
       acc[e.check] = (acc[e.check] ?? 0) + 1;

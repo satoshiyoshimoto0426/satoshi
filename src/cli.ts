@@ -25,6 +25,7 @@ import { fetchSource } from './fetchers/index.js';
 import { runCollect } from './pipeline/collect.js';
 import { approveDigest, runDeliver } from './pipeline/deliver.js';
 import { runSummarize } from './pipeline/summarize.js';
+import { ConfigError } from './types.js';
 import type { AppContext, ChannelConfig, Logger, Run, SourceConfig } from './types.js';
 import { createLogger } from './util/logger.js';
 import { isValidDateString, toJstDateString } from './util/time.js';
@@ -408,6 +409,56 @@ program
   );
 
 program
+  .command('test-broadcast')
+  .description('各チャネルへテスト配信を送る(疎通確認。タスク M0-05)')
+  .option('--channel <id...>', '対象チャネル ID(省略時は全チャネル)')
+  .option('--yes', '確認なしで実際に送信する(指定しないと本文を表示するだけ)')
+  .action((options: { channel?: string[]; yes?: boolean }) =>
+    runCommand('test-broadcast', async (logger) => {
+      const ctx = await createContext({ logger });
+      const channels =
+        options.channel === undefined
+          ? ctx.config.channels
+          : ctx.config.channels.filter((c) => options.channel?.includes(c.id));
+
+      const unknown = (options.channel ?? []).filter((id) => !ctx.config.channels.some((c) => c.id === id));
+      if (unknown.length > 0) {
+        throw new ConfigError(`存在しないチャネル ID です: ${unknown.join(', ')}`);
+      }
+
+      const nowJst = toJstDateString(ctx.clock.now());
+      for (const channel of channels) {
+        const text = [
+          `【疎通確認】${channel.name}`,
+          '',
+          'このメッセージは配信基盤の疎通確認です。制度改正の情報ではありません。',
+          `送信日(JST): ${nowJst}`,
+          '',
+          '毎朝 07:30 にこのアカウントから制度改正のまとめが届きます。',
+          '届かない日はシステム障害の可能性があるため、管理者へご連絡ください。',
+        ].join('\n');
+
+        // 既定は「送らない」。疎通確認のつもりで友だち全員に誤送信する事故を防ぐ。
+        if (options.yes !== true) {
+          console.log(`--- ${channel.id}(未送信。送るには --yes を付けてください)---`);
+          console.log(text);
+          console.log('');
+          continue;
+        }
+
+        const token = await ctx.resolveLineToken(channel);
+        const result = await ctx.line.broadcast(token, text, ctx.newId());
+        console.log(`送信しました: ${channel.id}(requestId=${result.requestId ?? '-'})`);
+        logger.info('テスト配信を送信しました', {
+          channelId: channel.id,
+          status: result.status,
+          requestId: result.requestId,
+        });
+      }
+    }),
+  );
+
+program
   .command('approve')
   .description('承認モードのまとめを承認して配信可能にする(FR-15)')
   .requiredOption('--date <YYYY-MM-DD>', '対象の JST 日付')
@@ -534,34 +585,58 @@ program
 
 program
   .command('health')
-  .description('連続失敗しているソースの一覧を出す(運用手順書 §3.2)')
+  .description('異常のあるソースの一覧を出す(連続失敗 / 候補 0 件。運用手順書 §3.2)')
   .action(() =>
     runCommand('health', async (logger) => {
       const ctx = await createContext({ logger });
       const names = new Map(ctx.config.sources.map((source) => [source.id, source.name]));
-      const failing = (await ctx.store.listSourceStates())
+      const states = await ctx.store.listSourceStates();
+
+      const failing = states
         .filter((state) => state.consecutiveFailures >= 1)
         // 失敗回数の多い順。同数なら id 順で並びを安定させる。
         .sort((a, b) => b.consecutiveFailures - a.consecutiveFailures || (a.sourceId < b.sourceId ? -1 : 1));
 
-      if (failing.length === 0) {
-        console.log('連続失敗しているソースはありません。');
-        logger.info('ソース状態は正常です', { failing: 0 });
+      // HTTP は成功しているのに候補が 1 件も取れないソース(セレクタ失効の疑い)。
+      // 失敗として記録されないため、ここで明示的に拾わないと誰も気づけない(要件 G5)。
+      const silent = states
+        .filter((state) => state.consecutiveFailures === 0 && state.consecutiveEmpty >= 1)
+        .sort((a, b) => b.consecutiveEmpty - a.consecutiveEmpty || (a.sourceId < b.sourceId ? -1 : 1));
+
+      if (failing.length === 0 && silent.length === 0) {
+        console.log('異常のあるソースはありません。');
+        logger.info('ソース状態は正常です', { failing: 0, silent: 0 });
         return;
       }
 
-      console.log(`連続失敗しているソース: ${failing.length} 件`);
-      for (const state of failing) {
-        console.log(
-          `${String(state.consecutiveFailures).padStart(3)} 回  ${state.sourceId}  ` +
-            `${names.get(state.sourceId) ?? '(設定に無いソース)'}`,
-        );
-        console.log(
-          `        最終成功: ${state.lastSuccessAt ?? '記録なし'} / 直近エラー: ${state.lastError ?? '-'}`,
-        );
+      if (failing.length > 0) {
+        console.log(`連続失敗しているソース: ${failing.length} 件`);
+        for (const state of failing) {
+          console.log(
+            `${String(state.consecutiveFailures).padStart(3)} 回  ${state.sourceId}  ` +
+              `${names.get(state.sourceId) ?? '(設定に無いソース)'}`,
+          );
+          console.log(
+            `        最終成功: ${state.lastSuccessAt ?? '記録なし'} / 直近エラー: ${state.lastError ?? '-'}`,
+          );
+        }
       }
+
+      if (silent.length > 0) {
+        if (failing.length > 0) console.log('');
+        console.log(`候補 0 件が続いているソース(セレクタ失効の疑い): ${silent.length} 件`);
+        for (const state of silent) {
+          console.log(
+            `${String(state.consecutiveEmpty).padStart(3)} 回  ${state.sourceId}  ` +
+              `${names.get(state.sourceId) ?? '(設定に無いソース)'}`,
+          );
+          console.log(`        最終成功: ${state.lastSuccessAt ?? '記録なし'} / HTTP は成功、候補 0 件`);
+        }
+      }
+
+      console.log('');
       console.log('対応手順: 運用手順書 §3.2(verify-sources で URL とセレクタを確認)');
-      logger.warn('連続失敗しているソースがあります', { failing: failing.length });
+      logger.warn('異常のあるソースがあります', { failing: failing.length, silent: silent.length });
       process.exitCode = 1;
     }),
   );
