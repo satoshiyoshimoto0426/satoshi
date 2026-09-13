@@ -213,6 +213,35 @@ describe('runSummarize: 対象ウィンドウ(詳細設計書 §6.2)', () => {
     expect(aiInputIds(ctx)).toEqual([]);
   });
 
+  it('force の作り直しで本文から外れた項目は「未配信」に戻る', async () => {
+    // --force は障害からの復旧手段。作り直しで載らなくなった項目が配信済みのまま残ると、
+    // 繰り越しの対象からも外れて永久に埋もれ、打つほど取りこぼしが増えてしまう。
+    const kept = item(1, { detectedAt: INSIDE });
+    const dropped = item(2, { detectedAt: INSIDE });
+
+    // 1 回目: 2 件とも本文に載る。
+    const ctx = setup([kept, dropped]);
+    await runSummarize(ctx, { date: DEFAULT_DATE_JST });
+    for (const id of [kept.id, dropped.id]) {
+      expect((await ctx.store.getItem(id))?.digestedIn).toContain(DIGEST_ID);
+    }
+
+    // 2 回目: maxItems を 1 に絞って作り直すと 1 件しか載らない。
+    ctx.config.channels = ctx.config.channels.map((c) => (c.id === 'welfare' ? { ...c, maxItems: 1 } : c));
+    await runSummarize(ctx, { date: DEFAULT_DATE_JST, force: true });
+
+    const digest = digestOf(ctx);
+    const usedIds = digest.entries.map((e) => e.itemId);
+    expect(usedIds).toHaveLength(1);
+
+    const unusedId = [kept.id, dropped.id].find((id) => !usedIds.includes(id));
+    expect(unusedId).toBeDefined();
+    // 載らなかった方は印が外れ、次回以降の候補に戻っている。
+    expect((await ctx.store.getItem(unusedId as string))?.digestedIn).not.toContain(DIGEST_ID);
+    // 載った方は印が付いたまま(再配信しない)。
+    expect((await ctx.store.getItem(usedIds[0] as string))?.digestedIn).toContain(DIGEST_ID);
+  });
+
   it('繰り越し期間より古いものは拾わない(無限に溜め込まない)', async () => {
     const inWindow = item(1, { detectedAt: INSIDE });
     // ウィンドウ開始の 4 日前 = CARRY_OVER_DAYS(3 日)より前。

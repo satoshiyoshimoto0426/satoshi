@@ -498,13 +498,33 @@ export async function runCollect(ctx: AppContext, opts?: CollectOptions): Promis
       // 4a で実際に取り直した id。4b は `existing` の(古い)スナップショットを見るため、
       // ここで覚えておかないと同じアイテムを二重に取得・二重に計上してしまう。
       const refetched = new Set<string>();
+      // 1 巡回で取り直す件数の上限。新規と同じ上限を使う。
+      // CMS 更改などで一覧の見出しが一斉に変わると、上限が無ければ
+      // 「候補数 × 2 秒」で Cloud Run Jobs のタイムアウトに達し、
+      // Run が 'running' のまま残って配信文面のカバレッジが 0 件になる。
+      const updateLimit = runtime.maxNewItemsPerSource;
+      let updateDeferred = 0;
       for (const candidate of normalized) {
         const previous = existing.get(candidate.id);
         if (previous === undefined) continue;
         knownCandidates.push(candidate);
+        if (refetched.size >= updateLimit) {
+          updateDeferred += 1;
+          continue;
+        }
         if (await updateKnownItem(source, previous, candidate, now, expiresAt)) {
           refetched.add(candidate.id);
         }
+      }
+      if (updateDeferred > 0) {
+        // 黙って捨てない。次回の巡回で取り直される。
+        const message = `ソース ${source.id}: 更新候補 ${updateDeferred} 件を上限(${updateLimit})のため次回に繰り越しました`;
+        errors.push(message);
+        logger.warn('更新候補を次回に繰り越しました', {
+          sourceId: source.id,
+          deferred: updateDeferred,
+          limit: updateLimit,
+        });
       }
 
       // 4b. 定期再チェック。

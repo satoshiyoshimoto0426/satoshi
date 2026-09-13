@@ -242,6 +242,34 @@ export function createFirestoreStore(projectId: string | null, databaseId: strin
       }
     },
 
+    /**
+     * digestedIn から digestId を取り除く(`summarize --force` の作り直し用)。
+     * markItemsDigested と同じ理由で NOT_FOUND は読み飛ばす。
+     */
+    async unmarkItemsDigested(itemIds: string[], digestId: string): Promise<void> {
+      const uniqueIds = [...new Set(itemIds)];
+      if (uniqueIds.length === 0) return;
+
+      for (const idChunk of chunk(uniqueIds, BATCH_LIMIT)) {
+        const batch = db.batch();
+        for (const id of idChunk) {
+          batch.update(itemsCol.doc(id), { digestedIn: FieldValue.arrayRemove(digestId) });
+        }
+        try {
+          await batch.commit();
+        } catch (e) {
+          if (!isNotFound(e)) throw e;
+          for (const id of idChunk) {
+            try {
+              await itemsCol.doc(id).update({ digestedIn: FieldValue.arrayRemove(digestId) });
+            } catch (inner) {
+              if (!isNotFound(inner)) throw inner;
+            }
+          }
+        }
+      }
+    },
+
     // -------------------------------------------------------------- digests
     async getDigest(id: string): Promise<Digest | null> {
       return fromSnapshot<Digest>(await digestsCol.doc(id).get());

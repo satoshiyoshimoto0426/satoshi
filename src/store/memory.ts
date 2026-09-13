@@ -146,6 +146,14 @@ export function createMemoryStore(): MemoryStore {
       }
     },
 
+    async unmarkItemsDigested(itemIds: string[], digestId: string): Promise<void> {
+      for (const id of itemIds) {
+        const found = items.get(id);
+        if (found === undefined) continue;
+        found.digestedIn = found.digestedIn.filter((d) => d !== digestId);
+      }
+    },
+
     // -------------------------------------------------------------- digests
     async getDigest(id: string): Promise<Digest | null> {
       return getCloned(digests, id);

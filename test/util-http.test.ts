@@ -735,3 +735,68 @@ describe('checkReachable(品質ゲート Q2 / verify-sources)', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// SSRF 対策
+//
+// 巡回先の候補リンクは外部サイトの HTML から取る。壊れた/悪意のあるページが
+// 内部アドレスを張っていると、本文抽出がそこへ GET してしまう。
+// クラウドのメタデータサーバ(169.254.169.254)や内部ネットワークの探索に
+// 使われうるため、インフラの egress 制限と二重に塞ぐ。
+// ---------------------------------------------------------------------------
+
+describe('createHttpClient: 内部ネットワーク宛の遮断(SSRF 対策)', () => {
+  const internal = [
+    'http://localhost/x',
+    'https://127.0.0.1/x',
+    'https://169.254.169.254/latest/meta-data/',
+    'https://10.0.0.1/x',
+    'https://172.16.0.1/x',
+    'https://192.168.1.1/x',
+    'https://100.64.0.1/x',
+    'https://[::1]/x',
+    'https://service.internal/x',
+  ];
+
+  for (const url of internal) {
+    it(`get は ${url} を取得しない`, async () => {
+      const calls: string[] = [];
+      const client = createHttpClient(makeRuntime(), silentLogger(), {
+        fetchImpl: (async (input: RequestInfo | URL) => {
+          calls.push(String(input));
+          return new Response('x', { status: 200 });
+        }) as unknown as typeof fetch,
+        sleep: async () => {},
+      });
+
+      await expect(client.get(url)).rejects.toThrow(/内部ネットワーク/);
+      expect(calls).toHaveLength(0);
+    });
+
+    it(`checkReachable は ${url} を ok:false にする`, async () => {
+      const calls: string[] = [];
+      const client = createHttpClient(makeRuntime(), silentLogger(), {
+        fetchImpl: (async (input: RequestInfo | URL) => {
+          calls.push(String(input));
+          return new Response('x', { status: 200 });
+        }) as unknown as typeof fetch,
+        sleep: async () => {},
+      });
+
+      const result = await client.checkReachable(url);
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/内部ネットワーク/);
+      expect(calls).toHaveLength(0);
+    });
+  }
+
+  it('通常の外部ホストは従来どおり取得できる', async () => {
+    const client = createHttpClient(makeRuntime(), silentLogger(), {
+      fetchImpl: (async () => new Response('ok', { status: 200 })) as unknown as typeof fetch,
+      sleep: async () => {},
+    });
+
+    const res = await client.get('https://www.mhlw.go.jp/stf/');
+    expect(res.status).toBe(200);
+  });
+});

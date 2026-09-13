@@ -402,6 +402,13 @@ export interface Store {
   listItemsInWindow(query: ItemQuery): Promise<Item[]>;
   /** digestedIn に digestId を追記する。 */
   markItemsDigested(itemIds: string[], digestId: string): Promise<void>;
+  /**
+   * digestedIn から digestId を取り除く。
+   * `summarize --force` の作り直しで、前回は載ったが今回は載らなかった項目を
+   * 「未配信」に戻すために使う。戻さないと、その項目は配信されていないのに
+   * 配信済みと見なされ、繰り越しの対象からも外れて永久に埋もれる。
+   */
+  unmarkItemsDigested(itemIds: string[], digestId: string): Promise<void>;
 
   // digests
   getDigest(id: string): Promise<Digest | null>;

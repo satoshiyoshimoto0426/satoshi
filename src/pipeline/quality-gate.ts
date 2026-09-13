@@ -21,6 +21,7 @@
 
 import pLimit from 'p-limit';
 import type { AppContext, ChannelConfig, DigestEntry, ExcludedEntry, Item } from '../types.js';
+import { canonicalizeUrl } from '../util/url.js';
 
 /**
  * 禁則表現(Q5)。助言・推測・断定にあたる日本語表現を対象にする。
@@ -154,6 +155,23 @@ function applyStaticChecks(
   const urlSet = new Set(items.map((item) => item.canonicalUrl));
   const itemById = new Map(items.map((item) => [item.id, item]));
 
+  /**
+   * 出典 URL を入力集合と同じ形に正規化してから比較する。
+   *
+   * 集合側(item.canonicalUrl)は既に正規化済みなので、AI が末尾スラッシュや
+   * `http://`、大文字ホスト、`#fragment` を付けただけで Q1 が落としていた。
+   * 幻覚 URL が通る方向には緩まない(正規化しても実在しない URL は集合に無い)一方、
+   * 正しい項目が表記ゆれだけで消えて「その他 N 件」に化けるのは避けたい。
+   * 正規化できない文字列はそのまま返し、Q1 で落とす。
+   */
+  const normalize = (url: string): string => {
+    try {
+      return canonicalizeUrl(url);
+    } catch {
+      return url;
+    }
+  };
+
   const passed: Judged[] = [];
   const rejected: Rejected[] = [];
   /** Q8: 既に採用済みの出典 URL。 */
@@ -166,13 +184,16 @@ function applyStaticChecks(
 
     // --- Q1: 出典 URL が入力アイテムの canonicalUrl 集合に含まれるか ---------
     // 最重要ガード。AI が作り出した URL(幻覚)をここで必ず止める。
-    if (isBlank(entry.sourceUrl) || !urlSet.has(entry.sourceUrl)) {
+    const sourceUrl = isBlank(entry.sourceUrl) ? entry.sourceUrl : normalize(entry.sourceUrl);
+    if (isBlank(sourceUrl) || !urlSet.has(sourceUrl)) {
       reject(
         'Q1',
         `出典 URL が要約対象アイテムのいずれとも一致しません(実在しない URL を生成した疑い): ${entry.sourceUrl}`,
       );
       return;
     }
+    // 以降は正規化後の URL で扱う(本文にも正規化済みの URL を載せる)。
+    entry = { ...entry, sourceUrl };
 
     // --- Q3: itemId が実在し、その canonicalUrl が出典 URL と一致するか -------
     // Q1 を通っても「A の記事を要約して B の URL を貼る」取り違えは起こりうる。

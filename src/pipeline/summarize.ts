@@ -534,10 +534,14 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
   // さもないと再生成のたびに対象が 0 件になり、「新着はあったのに
   // 『本日の新着はありません』」という事実と異なる配信物ができてしまう
   // (再利用防止の印は "他の日のダイジェストで使った" ことを表すためのもの)。
-  const forgetOwnMark = (item: Item): Item =>
-    job.force && item.digestedIn.includes(digestId)
-      ? { ...item, digestedIn: item.digestedIn.filter((id) => id !== digestId) }
-      : item;
+  // force で印を外したアイテムの id。作り直しの最後に「本文へ載らなかったもの」を
+  // 未配信へ戻すため、外す前の状態を覚えておく必要がある。
+  const hadOwnMark = new Set<string>();
+  const forgetOwnMark = (item: Item): Item => {
+    if (!job.force || !item.digestedIn.includes(digestId)) return item;
+    hadOwnMark.add(item.id);
+    return { ...item, digestedIn: item.digestedIn.filter((id) => id !== digestId) };
+  };
 
   const byId = new Map(freshItems.map((item) => [item.id, forgetOwnMark(item)]));
   let updatedPicked = 0;
@@ -737,6 +741,22 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
   const usedItemIds = [...new Set(fitted.entries.map((entry) => entry.itemId))];
   if (usedItemIds.length > 0) {
     await ctx.store.markItemsDigested(usedItemIds, digestId);
+  }
+
+  // force で作り直したとき、前回は載ったが今回は載らなかった項目は「未配信」に戻す。
+  // 戻さないと、配信されていないのに配信済みと見なされ、繰り越しの対象からも外れて
+  // 永久に埋もれる。--force は障害からの復旧手段なので、打つほど取りこぼしが
+  // 増えるようでは使えない。
+  if (job.force) {
+    const used = new Set(usedItemIds);
+    const dropped = [...hadOwnMark].filter((id) => !used.has(id));
+    if (dropped.length > 0) {
+      await ctx.store.unmarkItemsDigested(dropped, digestId);
+      log.info('作り直しで本文から外れた項目を未配信に戻しました', {
+        digestId,
+        count: dropped.length,
+      });
+    }
   }
 
   await ctx.store.putDigest(digest);

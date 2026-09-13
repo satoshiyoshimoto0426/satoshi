@@ -166,6 +166,39 @@ function isRetryableError(e: unknown): boolean {
   return true;
 }
 
+/**
+ * 内部ネットワーク宛のホスト名か。
+ *
+ * 巡回先の候補リンクは外部サイトの HTML から取る。悪意のある/壊れたページが
+ * `http://169.254.169.254/...` や `http://10.0.0.1/` を張っていると、本文抽出が
+ * そこへ GET してしまう(SSRF)。クラウドのメタデータサーバや内部ネットワークの
+ * 探索に使われうるため、アプリ側でも塞ぐ。インフラの egress 制限(詳細設計書 §11)と
+ * 二重のガードにする。
+ *
+ * 名前解決までは行わない(DNS リバインディングは egress ポリシー側の担当)。
+ * ここで止めるのは「URL に直接書かれた内部アドレス」。
+ */
+export function isInternalHost(host: string): boolean {
+  const h = host.toLowerCase();
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal')) {
+    return true;
+  }
+  // IPv6 は角括弧付きで渡ってくる。ループバックとユニークローカルを塞ぐ。
+  if (h.startsWith('[')) {
+    const v6 = h.slice(1, -1);
+    return v6 === '::1' || v6 === '::' || v6.startsWith('fc') || v6.startsWith('fd') || v6.startsWith('fe80');
+  }
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (m === null) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  if (a === 127 || a === 0 || a === 10) return true; // ループバック / 未指定 / プライベート
+  if (a === 169 && b === 254) return true; // リンクローカル(クラウドのメタデータサーバ)
+  if (a === 172 && b >= 16 && b <= 31) return true; // プライベート
+  if (a === 192 && b === 168) return true; // プライベート
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  return false;
+}
+
 export function createHttpClient(runtime: RuntimeConfig, logger: Logger, deps?: HttpClientDeps): HttpClient {
   const fetchImpl = deps?.fetchImpl ?? fetch;
   const sleepFn = deps?.sleep ?? defaultSleep;
@@ -302,6 +335,10 @@ export function createHttpClient(runtime: RuntimeConfig, logger: Logger, deps?: 
   async function get(url: string, options: HttpGetOptions = {}): Promise<HttpResponse> {
     const host = hostOf(url);
     if (!host) throw new TypeError(`HttpClient.get: 不正な URL です: ${url}`);
+    if (isInternalHost(host)) {
+      // 外部サイトのリンク経由で内部ネットワークへ到達させない(SSRF 対策)。
+      throw new HttpError(0, url, `内部ネットワーク宛の URL は取得しません: ${host}`);
+    }
 
     if (!options.skipRobots) {
       await ensureRobotsAllowed(url, host);
@@ -375,6 +412,10 @@ export function createHttpClient(runtime: RuntimeConfig, logger: Logger, deps?: 
   ): Promise<{ ok: boolean; status: number | null; error: string | null }> {
     const host = hostOf(url);
     if (!host) return { ok: false, status: null, error: 'URL を解釈できません' };
+    if (isInternalHost(host)) {
+      // 内部アドレスを出典として配信してはいけない(SSRF 対策 / Q2)。
+      return { ok: false, status: null, error: `内部ネットワーク宛の URL です: ${host}` };
+    }
 
     const timeout = timeoutMs ?? runtime.httpTimeoutMs;
     const headers = buildHeaders({});
