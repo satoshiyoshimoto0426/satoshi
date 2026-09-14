@@ -23,6 +23,7 @@ AI リスキリング制度と、就労支援事業所・放課後等デイサ�
 | [docs/03_詳細設計書.md](docs/03_詳細設計書.md) | アーキテクチャ・データモデル・AI 設計・品質ゲート |
 | [docs/04_運用手順書.md](docs/04_運用手順書.md) | 日常運用・障害対応・デプロイ・初回セットアップ |
 | [docs/05_品質監査チェックリスト.md](docs/05_品質監査チェックリスト.md) | 週次 10 分の抜き取り監査手順 |
+| [docs/06_認証情報の取得手順.md](docs/06_認証情報の取得手順.md) | LINE トークン・Anthropic キー・Slack Webhook の取り方 |
 
 ---
 
@@ -135,6 +136,9 @@ export PROJECT_ID=<Google Cloud のプロジェクト ID>
 bash infra/bootstrap.sh      # API 有効化・状態バケット・権限・鍵なし認証・シークレットの箱
 bash scripts/set-secrets.sh  # トークンの値を投入(画面に表示されません)
 ```
+
+`set-secrets.sh` で入れる 4 つの値の取り方は
+[docs/06_認証情報の取得手順.md](docs/06_認証情報の取得手順.md) を参照してください。
 
 最後に表示されるリポジトリ変数 5 つを GitHub の
 `Settings > Secrets and variables > Actions > Variables` に設定すれば完了です。
