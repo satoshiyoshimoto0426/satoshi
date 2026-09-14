@@ -47,7 +47,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # 設定が揃っていないリポジトリで毎回失敗させない。
-    if: vars.GCP_PROJECT_ID != ''
+    # フォークからの pull request は id-token が降りず認証が必ず失敗するので走らせない
+    # (このリポジトリは公開設定のため、誰でもフォークして PR を出せる)。
+    if: >-
+      vars.GCP_PROJECT_ID != '' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     env:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION || 'asia-northeast1' }}

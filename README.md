@@ -121,10 +121,17 @@ DRY_RUN=true STORE_KIND=memory pnpm cli preview   --date 2026-09-12
 GitHub Actions が検証 → イメージのビルド → Terraform 適用 → 疎通確認(送信なし)まで行います。
 pull request では `terraform plan` の差分が出るだけで、適用はされません。
 
-初回だけ、`gcloud` にログインした端末で次を実行します。
+初回だけ設定が必要です。**Google Cloud Shell(ブラウザ)で実行するのがいちばん簡単です。**
+インストールは不要で、gcloud が最初から使えます。
+Windows の PowerShell では bash スクリプトが動かないので注意してください。
+
+Google Cloud コンソールの右上にあるターミナルのアイコン(`>_`)を開き、次を実行します。
 
 ```bash
+git clone https://github.com/satoshiyoshimoto0426/satoshi.git
+cd satoshi
 export PROJECT_ID=<Google Cloud のプロジェクト ID>
+
 bash infra/bootstrap.sh      # API 有効化・状態バケット・権限・鍵なし認証・シークレットの箱
 bash scripts/set-secrets.sh  # トークンの値を投入(画面に表示されません)
 ```
