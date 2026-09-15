@@ -59,3 +59,66 @@ sources:
     region: null
     enabled: true
     note: 障害福祉分野の専門紙。制度改正の背景まで報じる。
+
+  # ---------------------------------------------------------------------------
+  # WAM NET(独立行政法人 福祉医療機構)。省庁・都道府県の福祉行政情報を集約している。
+  # 報道より確度が高い準 1 次情報で、相手は情報提供を目的とする公的機関のため
+  # 拒否される可能性も低い。
+  #
+  # 都道府県版はとくに重要。自治体 19 サイトの直接監視は初回検証で
+  # ほぼ全滅した(404 / 403 / セレクタ不一致)が、こちらは 1 本で広く拾える。
+  # 到達確認済み(2026-09-15): いずれも HTTP 200。
+  # ---------------------------------------------------------------------------
+  - id: news_wam_pref
+    name: WAM NET 都道府県の福祉行政情報
+    type: rss
+    url: https://www.wam.go.jp/content/wamnet/pcpub/top/wamnetlab/pref_rss/rss_all_new.xml
+    channels: [welfare]
+    priority: high
+    region: null
+    enabled: true
+    note: 自治体ページ直接監視の代替。大阪・兵庫・京都・愛知・東京・神奈川・福岡を含む全国の更新を 1 本で拾う。
+
+  - id: news_wam_news
+    name: WAM NET 福祉・保健・医療の新着
+    type: rss
+    url: https://www.wam.go.jp/content/wamnet/pcpub/top/wamnetlab/rss/wamnet_news_rss2.xml
+    channels: [welfare]
+    priority: high
+    region: null
+    enabled: true
+    note: 省庁通知を含む全国の新着。厚労省サイトの構造変更で 1 次情報を取り逃しても、ここで気づける。
+
+  # ---------------------------------------------------------------------------
+  # 労働新聞社。雇用保険・助成金・労働法制の専門紙。
+  # AI リスキリング側は情報源が薄いため、制度改正を扱う専門紙で補強する。
+  # 到達確認済み(2026-09-15): HTTP 200。
+  # ---------------------------------------------------------------------------
+  - id: news_rodo
+    name: '報道: 労働新聞社(雇用保険・助成金・労働法制)'
+    type: rss
+    url: https://www.rodo.co.jp/feed/
+    channels: [ai_reskill]
+    priority: high
+    region: null
+    enabled: true
+    note: 人材開発支援助成金・教育訓練給付の要件変更は申請期限に直結するため優先度を高くしている。
+
+  # ---------------------------------------------------------------------------
+  # Yahoo! ニュース(国内)。分野を限らない広い網。
+  #
+  # 単体では雑音が多いが、大きな制度改正は必ずここに出るため「取りこぼしに
+  # 気づけない」状態を防ぐ最後の保険として入れている。
+  # 雑音が配信に溢れる心配は要らない: 分類で対象外を落とし、AI に渡すのは
+  # 重要度上位 20 件まで、配信はチャネルの maxItems までに絞られる。
+  # 到達確認済み(2026-09-15): HTTP 200。
+  # ---------------------------------------------------------------------------
+  - id: news_yahoo_domestic
+    name: '報道: Yahoo! ニュース(国内)'
+    type: rss
+    url: https://news.yahoo.co.jp/rss/topics/domestic.xml
+    channels: [ai_reskill, welfare]
+    priority: low
+    region: null
+    enabled: true
+    note: 広い網。優先度を low にしているのは、専門紙と競合したときに専門紙を優先させるため。
