@@ -622,6 +622,25 @@ describe('リトライとエラー', () => {
 });
 
 describe('checkReachable(品質ゲート Q2 / verify-sources)', () => {
+  it('robots.txt が禁じている URL は ok:false に robotsDisallowed:true を添え、本体には触れない', async () => {
+    // 通信の失敗(status=null)と区別できる印を付ける。Q2 はこの印を見て
+    // 「存在しない」ではなく「確認を省略」と解釈する(存在は Q1/Q3 が担保)。
+    const { fetchImpl, calls } = createFetchStub((call) =>
+      isRobotsRequest(call)
+        ? robotsTxt('User-agent: *\nDisallow: /articles/\n')
+        : new Response('', { status: 200 }),
+    );
+    const http = createHttpClient(makeRuntime(), silentLogger(), { fetchImpl });
+
+    await expect(http.checkReachable('https://example.jp/articles/a.html')).resolves.toMatchObject({
+      ok: false,
+      status: null,
+      robotsDisallowed: true,
+    });
+    // robots.txt 以外への要求は一切出さない(拒否を尊重する)。
+    expect(calls.filter((call) => !isRobotsRequest(call))).toHaveLength(0);
+  });
+
   it('200 なら ok:true', async () => {
     const { fetchImpl, calls } = createFetchStub((call) =>
       isRobotsRequest(call) ? new Response('', { status: 404 }) : new Response('', { status: 200 }),

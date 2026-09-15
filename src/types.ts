@@ -376,11 +376,18 @@ export interface HttpGetOptions {
 export interface HttpClient {
   /** 条件付き GET。robots.txt 不許可なら RobotsDisallowedError を投げる。 */
   get(url: string, options?: HttpGetOptions): Promise<HttpResponse>;
-  /** 到達確認(品質ゲート Q2)。2xx/3xx なら true。 */
+  /**
+   * 到達確認(品質ゲート Q2)。2xx/3xx なら true。
+   *
+   * robotsDisallowed は「robots.txt が巡回を禁じているため確かめられなかった」印。
+   * ok は false のままにする(ソース設定の検証では NG として扱うのが正しい)が、
+   * Q2 はこれを「存在しない」とは解釈しない ― 存在は Q1/Q3 が担保しており、
+   * robots の拒否は「巡回するな」であって「無い」ではないため。
+   */
   checkReachable(
     url: string,
     timeoutMs?: number,
-  ): Promise<{ ok: boolean; status: number | null; error: string | null }>;
+  ): Promise<{ ok: boolean; status: number | null; error: string | null; robotsDisallowed?: boolean }>;
 }
 
 // ---------------------------------------------------------------------------

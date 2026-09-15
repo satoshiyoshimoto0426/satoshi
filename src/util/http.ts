@@ -409,7 +409,7 @@ export function createHttpClient(runtime: RuntimeConfig, logger: Logger, deps?: 
   async function checkReachable(
     url: string,
     timeoutMs?: number,
-  ): Promise<{ ok: boolean; status: number | null; error: string | null }> {
+  ): Promise<{ ok: boolean; status: number | null; error: string | null; robotsDisallowed?: boolean }> {
     const host = hostOf(url);
     if (!host) return { ok: false, status: null, error: 'URL を解釈できません' };
     if (isInternalHost(host)) {
@@ -439,6 +439,10 @@ export function createHttpClient(runtime: RuntimeConfig, logger: Logger, deps?: 
     } catch (e) {
       const message = errorMessage(e);
       logger.debug('到達確認に失敗しました', { url, error: message });
+      if (e instanceof RobotsDisallowedError) {
+        // 通信の失敗ではなく、相手の意思による拒否。呼び出し側が区別できるよう印を付ける。
+        return { ok: false, status: null, error: message, robotsDisallowed: true };
+      }
       return { ok: false, status: null, error: message };
     }
   }
