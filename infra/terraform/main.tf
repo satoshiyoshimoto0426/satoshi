@@ -649,9 +649,17 @@ resource "google_monitoring_alert_policy" "source_failure" {
 # 詳細設計書 §12「07:45 時点で当日 deliveries が無い」。0 件の日も必ず配信する(FR-11)ため、
 # 「配信ログが無い = 異常」と断定してよい。
 #
-# metric absence は「直近 duration の間データが無い」ときに発火する。deliver は毎日 07:30 に
-# 1 回だけ動くため、duration を 24 時間(absence の上限)にすると、前日の成功時刻から
-# 24 時間後 ≒ 当日 07:3x〜07:45 に発火する。
+# condition_absent(直近 duration の間データが無い)は使えない。duration の上限が 23h30m で、
+# 配信間隔 24h より短いためである。正常な日でも次の配信の 30 分前に必ず「データなし」へ達し、
+# 毎日誤報が出る。
+#
+# 代わりに「直近 24 時間の配信成功回数が 0 か」を見る。alignment_period で 24 時間の移動窓を
+# 取るので、正常な日は窓の中に必ず前回の成功が 1 件入り発火しない。1 日抜けた瞬間に
+# 前回の成功が窓から外れて 0 になり、最後の成功から 24 時間後に発火する。
+#
+# evaluation_missing_data = ACTIVE は「系列そのものが無い」場合も異常として扱う指定。
+# 一度も配信が成功していない状態(構築直後や、ジョブが最初から動いていない場合)を
+# 「データが無いので判定不能」として見逃さないために必要。
 #
 # 条件を 2 つ入れて combiner = OR にしているのは、アプリのログ形式が変わっても
 # Cloud Run 側のタスク完了メトリクスで検知を継続できるようにするため(見張りの二重化)。
@@ -664,12 +672,15 @@ resource "google_monitoring_alert_policy" "deliver_missing" {
   conditions {
     display_name = "deliver の成功ログが 24 時間途絶えている"
 
-    condition_absent {
-      filter   = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.deliver_success.name}\" AND resource.type=\"cloud_run_job\""
-      duration = "86400s"
+    condition_threshold {
+      filter                  = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.deliver_success.name}\" AND resource.type=\"cloud_run_job\""
+      comparison              = "COMPARISON_LT"
+      threshold_value         = 1
+      duration                = "300s"
+      evaluation_missing_data = "EVALUATION_MISSING_DATA_ACTIVE"
 
       aggregations {
-        alignment_period     = "3600s"
+        alignment_period     = "86400s"
         per_series_aligner   = "ALIGN_SUM"
         cross_series_reducer = "REDUCE_SUM"
       }
@@ -683,12 +694,15 @@ resource "google_monitoring_alert_policy" "deliver_missing" {
   conditions {
     display_name = "deliver ジョブのタスク成功が 24 時間途絶えている"
 
-    condition_absent {
-      filter   = "metric.type=\"run.googleapis.com/job/completed_task_attempt_count\" AND resource.type=\"cloud_run_job\" AND resource.label.job_name=\"${local.deliver_job_name}\" AND metric.label.result=\"succeeded\""
-      duration = "86400s"
+    condition_threshold {
+      filter                  = "metric.type=\"run.googleapis.com/job/completed_task_attempt_count\" AND resource.type=\"cloud_run_job\" AND resource.label.job_name=\"${local.deliver_job_name}\" AND metric.label.result=\"succeeded\""
+      comparison              = "COMPARISON_LT"
+      threshold_value         = 1
+      duration                = "300s"
+      evaluation_missing_data = "EVALUATION_MISSING_DATA_ACTIVE"
 
       aggregations {
-        alignment_period     = "3600s"
+        alignment_period     = "86400s"
         per_series_aligner   = "ALIGN_SUM"
         cross_series_reducer = "REDUCE_SUM"
       }
@@ -715,8 +729,9 @@ resource "google_monitoring_alert_policy" "deliver_missing" {
       3. digest が無い場合は先に `pnpm cli summarize --date <YYYY-MM-DD> --force` を実行する。
       4. 復旧後に `pnpm cli deliver --date <YYYY-MM-DD>` で再配信する(同一日・同一チャネルは冪等)。
 
-      注意: このアラートは「過去に 1 度でも配信成功データがあること」を前提に発火する。
-      初回構築直後は deliver を 1 回成功させるまで見張りが効かない。
+      注意: 一度も配信が成功していない間(構築直後など)もこのアラートは発火する。
+      「データが無いので判定不能」として見逃さないための意図的な挙動で、
+      deliver が 1 回成功すれば自動的に解除される。
     EOT
   }
 
