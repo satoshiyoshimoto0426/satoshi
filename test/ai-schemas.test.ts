@@ -124,22 +124,28 @@ describe('buildClassifyJsonSchema', () => {
     expect(at(schema, 'properties.results.items.required')).toEqual(CLASSIFY_REQUIRED);
   });
 
-  it('relevance は 0..1 の数値、importance と kind はドメイン型と同じ enum', () => {
+  it('relevance は数値(範囲制約は API が拒否するため zod にだけ持たせる)', () => {
     const schema = buildClassifyJsonSchema(['welfare']);
-    expect(at(schema, 'properties.results.items.properties.relevance')).toEqual({
-      type: 'number',
-      minimum: 0,
-      maximum: 1,
-    });
+    const relevance = at(schema, 'properties.results.items.properties.relevance') as Record<string, unknown>;
+    expect(relevance.type).toBe('number');
+    expect(relevance.minimum).toBeUndefined();
+    expect(relevance.maximum).toBeUndefined();
     expect(at(schema, 'properties.results.items.properties.importance.enum')).toEqual(IMPORTANCE_LEVELS);
     expect(at(schema, 'properties.results.items.properties.kind.enum')).toEqual(ITEM_KINDS);
   });
 
-  it('日付項目は string か null を許し、reason には 200 文字の上限が付く', () => {
+  it('日付項目は anyOf で string か null を許す(型配列は使わない)', () => {
     const schema = buildClassifyJsonSchema(['welfare']);
-    expect(at(schema, 'properties.results.items.properties.effectiveDate.type')).toEqual(['string', 'null']);
-    expect(at(schema, 'properties.results.items.properties.deadline.type')).toEqual(['string', 'null']);
-    expect(at(schema, 'properties.results.items.properties.reason.maxLength')).toBe(200);
+    const nullableString = [{ type: 'string' }, { type: 'null' }];
+    expect(at(schema, 'properties.results.items.properties.effectiveDate.anyOf')).toEqual(nullableString);
+    expect(at(schema, 'properties.results.items.properties.deadline.anyOf')).toEqual(nullableString);
+  });
+
+  it('reason の文字数上限は API に送らず、description で伝える', () => {
+    const schema = buildClassifyJsonSchema(['welfare']);
+    const reason = at(schema, 'properties.results.items.properties.reason') as Record<string, unknown>;
+    expect(reason.maxLength).toBeUndefined();
+    expect(reason.description).toContain('200');
   });
 
   it('properties の集合は required と一致する(定義漏れ・余剰が無い)', () => {
@@ -179,22 +185,69 @@ describe('DIGEST_JSON_SCHEMA', () => {
     expect(Object.keys(properties).sort()).toEqual([...DIGEST_ENTRY_REQUIRED].sort());
   });
 
-  it('各文字列項目に §7.2 の maxLength が付く', () => {
+  it('文字数上限は API に送らず(maxLength は 400 で拒否される)、description で伝える', () => {
     const base = 'properties.entries.items.properties';
-    expect(at(DIGEST_JSON_SCHEMA, `${base}.headline.maxLength`)).toBe(60);
-    expect(at(DIGEST_JSON_SCHEMA, `${base}.summary.maxLength`)).toBe(140);
-    expect(at(DIGEST_JSON_SCHEMA, `${base}.affected.maxLength`)).toBe(40);
-    expect(at(DIGEST_JSON_SCHEMA, `${base}.dateNote.maxLength`)).toBe(40);
+    for (const [field, limit] of [
+      ['headline', '60'],
+      ['summary', '140'],
+      ['affected', '40'],
+      ['dateNote', '40'],
+    ] as const) {
+      const prop = at(DIGEST_JSON_SCHEMA, `${base}.${field}`) as Record<string, unknown>;
+      expect(prop.maxLength, field).toBeUndefined();
+      expect(prop.description, field).toContain(limit);
+    }
   });
 
-  it('dateNote は string か null、importance はドメイン型と同じ enum', () => {
+  it('dateNote は anyOf で string か null、importance はドメイン型と同じ enum', () => {
     const base = 'properties.entries.items.properties';
-    expect(at(DIGEST_JSON_SCHEMA, `${base}.dateNote.type`)).toEqual(['string', 'null']);
+    expect(at(DIGEST_JSON_SCHEMA, `${base}.dateNote.anyOf`)).toEqual([{ type: 'string' }, { type: 'null' }]);
     expect(at(DIGEST_JSON_SCHEMA, `${base}.importance.enum`)).toEqual(IMPORTANCE_LEVELS);
   });
 
-  it('omittedCount は 0 以上の整数', () => {
-    expect(at(DIGEST_JSON_SCHEMA, 'properties.omittedCount')).toEqual({ type: 'integer', minimum: 0 });
+  it('omittedCount は整数(0 以上の制約は zod が担う)', () => {
+    const prop = at(DIGEST_JSON_SCHEMA, 'properties.omittedCount') as Record<string, unknown>;
+    expect(prop.type).toBe('integer');
+    expect(prop.minimum).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 構造化出力の API が受け付けないキーワードを含まないこと(回帰防止)
+//
+// 2026-09-16 の初回本番実行で、minimum / maxLength を含むスキーマが 400 で拒否され、
+// 分類バッチが全滅した(506 件が未分類)。HTTP エラーはバッチ単位で握られるため
+// ジョブは「成功」で終わり、翌朝の要約が止まるまで誰も気づけなかった。
+// スキーマ全体を再帰的に走査し、同じ事故を二度と起こさないようにする。
+// ---------------------------------------------------------------------------
+
+describe('API が拒否するキーワードを含まない', () => {
+  const FORBIDDEN = ['minimum', 'maximum', 'multipleOf', 'minLength', 'maxLength', 'pattern'];
+
+  function violations(node: unknown, path: string, out: string[]): void {
+    if (Array.isArray(node)) {
+      node.forEach((child, i) => violations(child, `${path}[${String(i)}]`, out));
+      return;
+    }
+    if (node === null || typeof node !== 'object') return;
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (FORBIDDEN.includes(key)) out.push(`${path}.${key}`);
+      // 型配列(['string','null'])は仕様書に対応の明記が無いので anyOf に統一する。
+      if (key === 'type' && Array.isArray(value)) out.push(`${path}.type(配列)`);
+      violations(value, `${path}.${key}`, out);
+    }
+  }
+
+  it('分類スキーマ', () => {
+    const out: string[] = [];
+    violations(buildClassifyJsonSchema(['welfare', 'ai_reskill']), '$', out);
+    expect(out).toEqual([]);
+  });
+
+  it('ダイジェストスキーマ', () => {
+    const out: string[] = [];
+    violations(DIGEST_JSON_SCHEMA, '$', out);
+    expect(out).toEqual([]);
   });
 });
 

@@ -9,6 +9,17 @@
  *   検証が素通りする穴になるので、必ず両方を同時に更新すること。
  * - すべてのオブジェクトに `additionalProperties: false`(zod では `.strict()`)と
  *   `required` 全項目を付ける。欠落や余剰フィールドを黙って受け入れないため。
+ *
+ * ただし数値・文字列の範囲制約だけは例外で、zod にしか書かない:
+ *   構造化出力(`output_config.format`)のスキーマコンパイラは
+ *   `minimum` / `maximum` / `minLength` / `maxLength` を受け付けず、含めると
+ *   リクエストごと 400 で拒否される。2026-09-16 の初回本番実行で分類バッチが
+ *   全滅し(506 件が未分類のまま)、この制約が原因だった。
+ *   `type: ['string', 'null']` のような型配列も避け、`anyOf` で書く
+ *   (仕様書が対応を明記しているのは基本型と anyOf / enum / const)。
+ *   上限値は description で AI に伝え、実際の検証は受信側の zod が担う。
+ *   SDK の zodOutputFormat() は同じ除去を自動で行うが、ここは生スキーマを渡す
+ *   経路(channels の enum をチャネル設定から動的に組む)のため自前で守る。
  */
 import { z } from 'zod';
 import { ConfigError } from '../types.js';
@@ -63,7 +74,7 @@ export function buildClassifyJsonSchema(channelIds: string[]): Record<string, un
           properties: {
             id: { type: 'string' },
             channels: { type: 'array', items: { enum: uniqueChannelIds } },
-            relevance: { type: 'number', minimum: 0, maximum: 1 },
+            relevance: { type: 'number', description: '0 以上 1 以下' },
             importance: { enum: [...IMPORTANCE_LEVELS] },
             kind: { enum: [...ITEM_KINDS] },
             isDuplicateOfNational: {
@@ -71,11 +82,11 @@ export function buildClassifyJsonSchema(channelIds: string[]): Record<string, un
               description: '自治体ページが国の通知を転載しただけの場合 true',
             },
             effectiveDate: {
-              type: ['string', 'null'],
+              anyOf: [{ type: 'string' }, { type: 'null' }],
               description: 'YYYY-MM-DD。原文に明記がある場合のみ',
             },
-            deadline: { type: ['string', 'null'] },
-            reason: { type: 'string', maxLength: REASON_MAX_CHARS },
+            deadline: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+            reason: { type: 'string', description: `${String(REASON_MAX_CHARS)} 文字以内` },
           },
           required: [
             'id',
@@ -112,10 +123,13 @@ export const DIGEST_JSON_SCHEMA: Record<string, unknown> = {
         type: 'object',
         properties: {
           itemId: { type: 'string' },
-          headline: { type: 'string', maxLength: HEADLINE_MAX_CHARS },
-          summary: { type: 'string', maxLength: SUMMARY_MAX_CHARS },
-          affected: { type: 'string', maxLength: AFFECTED_MAX_CHARS },
-          dateNote: { type: ['string', 'null'], maxLength: DATE_NOTE_MAX_CHARS },
+          headline: { type: 'string', description: `${String(HEADLINE_MAX_CHARS)} 文字以内` },
+          summary: { type: 'string', description: `${String(SUMMARY_MAX_CHARS)} 文字以内` },
+          affected: { type: 'string', description: `${String(AFFECTED_MAX_CHARS)} 文字以内` },
+          dateNote: {
+            anyOf: [{ type: 'string' }, { type: 'null' }],
+            description: `${String(DATE_NOTE_MAX_CHARS)} 文字以内`,
+          },
           sourceUrl: { type: 'string' },
           importance: { enum: [...IMPORTANCE_LEVELS] },
         },
@@ -123,7 +137,7 @@ export const DIGEST_JSON_SCHEMA: Record<string, unknown> = {
         additionalProperties: false,
       },
     },
-    omittedCount: { type: 'integer', minimum: 0 },
+    omittedCount: { type: 'integer', description: '0 以上' },
   },
   required: ['entries', 'omittedCount'],
   additionalProperties: false,
