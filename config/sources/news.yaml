@@ -1,0 +1,128 @@
+# =============================================================================
+# 報道・集約サイト(2 次情報)
+# id 接頭辞: news_
+#
+# なぜ 2 次情報を入れるか:
+#   官公庁サイトの直接監視は、URL が年度で変わり、HTML 構造も予告なく変わり、
+#   ボット拒否も多い。初回の verify-sources では 45 件中ほとんどが 404 / 403 /
+#   セレクタ不一致で使えなかった。1 次情報だけに頼ると「取りこぼしたことにすら
+#   気づけない」状態になる。
+#
+#   制度改正は必ず報道される。報道を併走させれば、官公庁ページの構造変化で
+#   1 次情報を取り逃しても、改正があったこと自体は掴める。
+#
+# 位置づけ(ここを取り違えないこと):
+#   報道は「気づくため」の網であって、根拠ではない。事業所が実際に従うのは
+#   告示・通知そのものである。配信文の注意書きに報道を含む旨を明記している。
+#
+# 技術的な利点:
+#   すべて RSS なので CSS セレクタが要らない。セレクタ失効という
+#   「巡回は成功しているのに永久に 0 件」の故障モードが原理的に起きない。
+#
+# !!! 未検証 !!!
+#   本ファイルの URL は到達確認をしていない。特に robots.txt で拒否される
+#   可能性がある(本システムは robots.txt を必ず守る。NFR-07)。
+#   `pnpm cli verify-sources` で確認し、NG のものは無効化すること。
+# =============================================================================
+sources:
+  # ---------------------------------------------------------------------------
+  # Google ニュース検索の RSS。キーワードごとにフィードを作れる。
+  # 形式: https://news.google.com/rss/search?hl=ja&gl=JP&ceid=JP:ja&q=<URLエンコード語>
+  #
+  # 検索語は「制度名 + 改正を示す語」に絞っている。制度名だけだと求人広告や
+  # 事業所紹介記事が大量に混ざり、AI の分類に無駄な費用がかかるため。
+  # なお分類段階で対象外は落とすので、多少の雑音は最終的な配信には出ない。
+  # ---------------------------------------------------------------------------
+  - id: news_google_shogai_hoshu
+    name: "報道: 障害福祉サービス 報酬改定(Google ニュース)"
+    type: rss
+    url: https://news.google.com/rss/search?hl=ja&gl=JP&ceid=JP:ja&q=%E9%9A%9C%E5%AE%B3%E7%A6%8F%E7%A5%89%E3%82%B5%E3%83%BC%E3%83%93%E3%82%B9+%E5%A0%B1%E9%85%AC%E6%94%B9%E5%AE%9A
+    channels: [welfare]
+    priority: high
+    region: null
+    enabled: true
+    note: 報酬改定は事業所の収入に直結するため最優先。官公庁ページより報道のほうが早いことが多い。
+
+  - id: news_google_houkago_day
+    name: "報道: 放課後等デイサービス 制度改正(Google ニュース)"
+    type: rss
+    url: https://news.google.com/rss/search?hl=ja&gl=JP&ceid=JP:ja&q=%E6%94%BE%E8%AA%B2%E5%BE%8C%E7%AD%89%E3%83%87%E3%82%A4%E3%82%B5%E3%83%BC%E3%83%93%E3%82%B9+%E5%88%B6%E5%BA%A6%E6%94%B9%E6%AD%A3+OR+%E5%9F%BA%E6%BA%96%E6%94%B9%E6%AD%A3+OR+%E9%80%9A%E7%9F%A5
+    channels: [welfare]
+    priority: high
+    region: null
+    enabled: true
+    note: 放課後等デイサービスの基準・通知の変更を報道側から拾う。
+
+  - id: news_google_shuro_shien
+    name: "報道: 就労支援(継続支援A型B型・移行支援)の制度変更(Google ニュース)"
+    type: rss
+    url: https://news.google.com/rss/search?hl=ja&gl=JP&ceid=JP:ja&q=%E5%B0%B1%E5%8A%B4%E7%B6%99%E7%B6%9A%E6%94%AF%E6%8F%B4+OR+%E5%B0%B1%E5%8A%B4%E7%A7%BB%E8%A1%8C%E6%94%AF%E6%8F%B4+%E5%88%B6%E5%BA%A6+OR+%E6%94%B9%E6%AD%A3+OR+%E5%A0%B1%E9%85%AC
+    channels: [welfare]
+    priority: high
+    region: null
+    enabled: true
+    note: A 型の運営基準見直しなど、事業所の存続に関わる変更を拾う。
+
+  - id: news_google_jidou_hattatsu
+    name: "報道: 児童発達支援・障害児通所支援(Google ニュース)"
+    type: rss
+    url: https://news.google.com/rss/search?hl=ja&gl=JP&ceid=JP:ja&q=%E5%85%90%E7%AB%A5%E7%99%BA%E9%81%94%E6%94%AF%E6%8F%B4+OR+%E9%9A%9C%E5%AE%B3%E5%85%90%E9%80%9A%E6%89%80%E6%94%AF%E6%8F%B4+%E6%94%B9%E6%AD%A3+OR+%E9%80%9A%E7%9F%A5
+    channels: [welfare]
+    priority: medium
+    region: null
+    enabled: true
+    note: こども家庭庁移管後の制度変更を拾う。
+
+  - id: news_google_reskilling_josei
+    name: "報道: リスキリング・人材開発支援助成金(Google ニュース)"
+    type: rss
+    url: https://news.google.com/rss/search?hl=ja&gl=JP&ceid=JP:ja&q=%E3%83%AA%E3%82%B9%E3%82%AD%E3%83%AA%E3%83%B3%E3%82%B0+OR+%E4%BA%BA%E6%9D%90%E9%96%8B%E7%99%BA%E6%94%AF%E6%8F%B4%E5%8A%A9%E6%88%90%E9%87%91+%E5%8A%A9%E6%88%90%E9%87%91+OR+%E6%94%B9%E6%AD%A3
+    channels: [ai_reskill]
+    priority: high
+    region: null
+    enabled: true
+    note: 助成金の要件変更は申請期限に直結するため、報道でも早く掴む価値が高い。
+
+  - id: news_google_kyoiku_kunren
+    name: "報道: 教育訓練給付金の制度変更(Google ニュース)"
+    type: rss
+    url: https://news.google.com/rss/search?hl=ja&gl=JP&ceid=JP:ja&q=%E6%95%99%E8%82%B2%E8%A8%93%E7%B7%B4%E7%B5%A6%E4%BB%98%E9%87%91+%E6%94%B9%E6%AD%A3+OR+%E6%8B%A1%E5%85%85+OR+%E5%88%B6%E5%BA%A6
+    channels: [ai_reskill]
+    priority: medium
+    region: null
+    enabled: true
+    note: 受講者側の給付要件の変更を拾う。
+
+  - id: news_google_ai_seisaku
+    name: "報道: AI 関連の法制度・ガイドライン(Google ニュース)"
+    type: rss
+    url: https://news.google.com/rss/search?hl=ja&gl=JP&ceid=JP:ja&q=AI+%E6%B3%95%E6%95%B4%E5%82%99+OR+%E3%82%AC%E3%82%A4%E3%83%89%E3%83%A9%E3%82%A4%E3%83%B3+OR+%E6%8C%87%E9%87%9D+%E6%94%BF%E5%BA%9C
+    channels: [ai_reskill]
+    priority: medium
+    region: null
+    enabled: true
+    note: AI 事業者ガイドラインなど、研修内容の更新が必要になる動きを拾う。
+
+  # ---------------------------------------------------------------------------
+  # 業界専門紙・集約サイト。一般紙より制度の細部まで踏み込むため精度が高い。
+  # 要検証: フィード URL。WordPress 系は /feed が多いが確認していない。
+  # ---------------------------------------------------------------------------
+  - id: news_joint_kaigo
+    name: "報道: 介護ニュース Joint(厚労省通知・報酬改定)"
+    type: rss
+    url: https://www.joint-kaigo.com/feed/
+    channels: [welfare]
+    priority: medium
+    region: null
+    enabled: true
+    note: 介護中心だが障害福祉の報酬改定・通知も扱う。厚労省通知の解説が早い。
+
+  - id: news_fukushi_shimbun
+    name: "報道: 福祉新聞"
+    type: rss
+    url: https://fukushishimbun.co.jp/feed
+    channels: [welfare]
+    priority: medium
+    region: null
+    enabled: true
+    note: 障害福祉分野の専門紙。制度改正の背景まで報じる。

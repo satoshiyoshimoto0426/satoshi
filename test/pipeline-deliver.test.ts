@@ -27,7 +27,7 @@ const MESSAGE_TEXT = [
   '　対象: 放課後等デイサービス',
   '　出典: https://www.mhlw.go.jp/stf/newpage_00001.html',
   '',
-  '※本まとめはAIが公的情報を要約したものです。正確な内容は必ず出典をご確認ください。',
+  '※本まとめはAIが公的情報・報道を要約したものです。報道は速報であり、実際の手続きは必ず出典元の公的情報をご確認ください。',
 ].join('\n');
 
 function makeDigest(overrides: Partial<Digest> = {}): Digest {

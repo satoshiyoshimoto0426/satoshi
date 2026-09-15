@@ -115,7 +115,7 @@ describe('パイプライン通し実行: 通常の朝(FR-05 / FR-06 / FR-09 / F
     const length = [...text].length;
     expect(length).toBeLessThanOrEqual(5000);
     expect(length).toBeLessThanOrEqual(channel?.maxChars ?? 0);
-    expect(text).toContain('※本まとめはAIが公的情報を要約したものです。');
+    expect(text).toContain('※本まとめはAIが公的情報・報道を要約したものです。');
   });
 
   it('出典 URL は AI に渡した入力に含まれていた URL だけ(幻覚が混ざらない)', async () => {
