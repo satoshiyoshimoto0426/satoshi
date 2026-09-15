@@ -128,7 +128,7 @@ describe('formatDigestMessage: 詳細設計書 §9 / 要件定義書 §11 のテ
       '',
       'その他の新着 2 件は重要度が低いため割愛しました。',
       '',
-      '※本まとめはAIが公的情報を要約したものです。正確な内容は必ず出典をご確認ください。',
+      '※本まとめはAIが公的情報・報道を要約したものです。報道は速報であり、実際の手続きは必ず出典元の公的情報をご確認ください。',
     ].join('\n');
 
     expect(formatDigestMessage(CHANNEL, DATE, entries, 2)).toBe(expected);
@@ -154,7 +154,7 @@ describe('formatDigestMessage: 詳細設計書 §9 / 要件定義書 §11 のテ
       '　2025/10/1 施行',
       '　出典: https://www.mhlw.go.jp/stf/kokuji.html',
       '',
-      '※本まとめはAIが公的情報を要約したものです。正確な内容は必ず出典をご確認ください。',
+      '※本まとめはAIが公的情報・報道を要約したものです。報道は速報であり、実際の手続きは必ず出典元の公的情報をご確認ください。',
     ].join('\n');
 
     expect(formatDigestMessage(CHANNEL, DATE, [entry], 0)).toBe(expected);
@@ -221,7 +221,7 @@ describe('その他の新着 N 件(FR-07)', () => {
 describe('免責文(FR-06 / 詳細設計書 §9)', () => {
   it('DISCLAIMER の文言が仕様どおり', () => {
     expect(DISCLAIMER).toBe(
-      '※本まとめはAIが公的情報を要約したものです。正確な内容は必ず出典をご確認ください。',
+      '※本まとめはAIが公的情報・報道を要約したものです。報道は速報であり、実際の手続きは必ず出典元の公的情報をご確認ください。',
     );
   });
 

@@ -19,7 +19,8 @@ import { formatJstHeaderDate } from '../util/time.js';
 export const LINE_TEXT_LIMIT = 5000;
 
 /** 本文末尾の免責(詳細設計書 §9)。 */
-export const DISCLAIMER = '※本まとめはAIが公的情報を要約したものです。正確な内容は必ず出典をご確認ください。';
+export const DISCLAIMER =
+  '※本まとめはAIが公的情報・報道を要約したものです。報道は速報であり、実際の手続きは必ず出典元の公的情報をご確認ください。';
 
 /** 「新着なし」配信末尾の注意書き(詳細設計書 §9.1 / FR-11)。 */
 export const EMPTY_NOTICE = '※この配信が届かない日はシステム障害の可能性があります。管理者へご連絡ください。';
