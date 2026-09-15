@@ -22,6 +22,7 @@ import { XMLParser } from 'fast-xml-parser';
 
 import type { FetchResult, HttpClient, SourceCandidate, SourceConfig, SourceState } from '../types.js';
 import { createLogger } from '../util/logger.js';
+import { jstWallClockToUtc } from '../util/time.js';
 import { isHttpUrl, resolveUrl } from '../util/url.js';
 
 const logger = createLogger({ module: 'fetchers/rss' });
@@ -189,7 +190,7 @@ function deepFindEntries(node: unknown, depth: number): Record<string, unknown>[
   if (!rec) return [];
   for (const [key, value] of Object.entries(rec)) {
     // 名前空間接頭辞を落として比較する(例: 'ns:item')。
-    const local = key.includes(':') ? (key.split(':').pop() ?? key) : key;
+    const local = (key.includes(':') ? (key.split(':').pop() ?? key) : key).toLowerCase();
     if (local === 'item' || local === 'entry') {
       const entries = toRecords(value);
       if (entries.length > 0) return entries;
@@ -211,6 +212,23 @@ function deepFindEntries(node: unknown, depth: number): Record<string, unknown>[
  *   3. RDF: item の `rdf:about` 属性(link が無い実装がある)
  *   4. guid / id が URL ならそれを使う
  */
+/**
+ * キー名を大文字小文字と名前空間接頭辞を無視して引く。
+ *
+ * 「RSS」と名乗りながら独自スキーマを返す配信元が実在する。
+ * 例: WAM NET の都道府県フィードは <RSS_LIST><ITEM><URL>… と全て大文字。
+ * 小文字決め打ちで探すと 1 件も取れず、しかも HTTP は 200 なので
+ * 「巡回成功・中身は永久に 0 件」という静かな故障になる。
+ */
+function pickField(item: Record<string, unknown>, names: string[]): unknown {
+  const wanted = new Set(names.map((n) => n.toLowerCase()));
+  for (const [key, value] of Object.entries(item)) {
+    const local = key.includes(':') ? (key.split(':').pop() ?? key) : key;
+    if (wanted.has(local.toLowerCase())) return value;
+  }
+  return undefined;
+}
+
 function extractLink(item: Record<string, unknown>): string {
   const links = toArray(item['link']);
 
@@ -231,7 +249,14 @@ function extractLink(item: Record<string, unknown>): string {
     if (text !== '') return text;
   }
 
-  // 3. RDF の rdf:about
+  // 3. 独自スキーマ。<URL> や <Link> のように綴りが違うものを拾う。
+  const alt = pickField(item, ['link', 'url', 'guid']);
+  if (alt !== undefined) {
+    const text = textOf(alt);
+    if (text !== '') return text;
+  }
+
+  // 4. RDF の rdf:about
   const about = textOf(item['@_rdf:about']) || textOf(item['@_about']);
   if (about !== '') return about;
 
@@ -252,11 +277,34 @@ function extractLink(item: Record<string, unknown>): string {
 /** 日付の候補キー。左が優先。RDF は dc:date、Atom は published / updated を使う。 */
 const DATE_KEYS = ['pubDate', 'dc:date', 'published', 'updated', 'date', 'issued', 'modified'] as const;
 
-/** 日付を ISO8601 UTC で返す。解釈できなければ null(検知時刻で代用する)。 */
+/**
+ * タイムゾーンを持たない日時表記。例: '2026-09-15 12:00' / '2026-09-15'。
+ * 国内の配信元がこの形で書いた場合、意図している時刻は日本時間である。
+ */
+const WALL_CLOCK_RE = /^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?$/;
+
+/**
+ * 日付を ISO8601 UTC で返す。解釈できなければ null(検知時刻で代用する)。
+ *
+ * タイムゾーンの無い表記を Date に直接渡してはいけない。実行環境の時間帯で
+ * 解釈されるため、UTC で動く Cloud Run では 9 時間ずれる。日付境界をまたぐと
+ * 「前日の記事」として扱われ、当日のダイジェストから漏れる。
+ */
 function extractPublishedAt(item: Record<string, unknown>): string | null {
   for (const key of DATE_KEYS) {
-    const raw = textOf(item[key]);
+    // 綴りが違う配信元(<DATE> など)も拾う。
+    const raw = textOf(item[key]) || textOf(pickField(item, [key]));
     if (raw === '') continue;
+
+    const wall = WALL_CLOCK_RE.exec(raw.trim());
+    if (wall) {
+      try {
+        return jstWallClockToUtc(wall[1] ?? '', wall[2] ?? '00:00').toISOString();
+      } catch {
+        // 形式が合わなければ通常の解釈に委ねる。
+      }
+    }
+
     const d = new Date(raw);
     if (!Number.isNaN(d.getTime())) return d.toISOString();
     logger.debug('フィードの日付を解釈できませんでした', { key, raw });
@@ -356,7 +404,7 @@ export async function fetchRss(
     if (seen.has(absolute)) continue;
     seen.add(absolute);
 
-    const title = textOf(entry['title']) || titleFromUrl(absolute);
+    const title = textOf(entry['title']) || textOf(pickField(entry, ['title'])) || titleFromUrl(absolute);
     candidates.push({ url: absolute, title, publishedAt: extractPublishedAt(entry) });
   }
 
