@@ -259,12 +259,13 @@ function applyStaticChecks(
 async function checkReachability(
   ctx: AppContext,
   url: string,
-): Promise<{ ok: boolean; status: number | null; error: string | null }> {
+): Promise<Awaited<ReturnType<AppContext['http']['checkReachable']>>> {
   let last = await ctx.http.checkReachable(url, REACHABILITY_TIMEOUT_MS);
 
   for (let attempt = 0; attempt < REACHABILITY_RETRIES && !last.ok; attempt++) {
     // 404 / 403 など 4xx は何度試しても同じ。再試行はネットワーク起因(status=null)と
-    // サーバ側の一時障害(5xx / 429)に限る。
+    // サーバ側の一時障害(5xx / 429)に限る。robots.txt の拒否も決定的なので再試行しない。
+    if (last.robotsDisallowed === true) break;
     const transient = last.status === null || last.status >= 500 || last.status === 429;
     if (!transient) break;
     last = await ctx.http.checkReachable(url, REACHABILITY_TIMEOUT_MS);
@@ -329,6 +330,18 @@ export async function applyQualityGate(ctx: AppContext, input: GateInput): Promi
   const survivors: Judged[] = [];
   for (const { judged, result } of reachability) {
     if (result.ok) {
+      survivors.push(judged);
+      continue;
+    }
+    if (result.robotsDisallowed === true) {
+      // robots.txt が記事ページの巡回を禁じているだけで、URL が存在しないわけではない。
+      // 存在は Q1/Q3(入力アイテムの canonicalUrl 集合との一致)が既に担保している。
+      // 報道サイトは記事ページへのボットを拒否することが多く、ここで落とすと
+      // RSS から正当に得た記事だけのまとめが全滅し、status=failed で配信が止まる
+      // (2026-09-16 に実際に起きうる構成だった)。到達確認を省略した事実はログに残す。
+      ctx.logger.info('Q2: robots.txt により到達確認を省略しました(存在は Q1/Q3 で担保)', {
+        url: judged.entry.sourceUrl,
+      });
       survivors.push(judged);
       continue;
     }

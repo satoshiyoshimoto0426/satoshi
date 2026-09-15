@@ -202,6 +202,28 @@ describe('Q1: 入力アイテムに無い出典 URL(AI の幻覚)', () => {
 // ---------------------------------------------------------------------------
 
 describe('Q2: 出典 URL の到達確認', () => {
+  it('robots.txt が禁じている URL は除外しない(存在は Q1/Q3 が担保。再試行もしない)', async () => {
+    // 報道サイトは記事ページへのボットを robots.txt で拒否することが多い。
+    // RSS から正当に得た URL をここで落とすと、報道だけのまとめが全滅して
+    // status=failed で配信が止まる。拒否は「巡回するな」であって「存在しない」ではない。
+    const NG_ROBOTS = {
+      ok: false,
+      status: null,
+      error: 'robots.txt により取得が許可されていません: ' + U2,
+      robotsDisallowed: true,
+    };
+    const items = [makeItem('i1', U1), makeItem('i2', U2)];
+    const entries = [makeEntry({ itemId: 'i1', sourceUrl: U1 }), makeEntry({ itemId: 'i2', sourceUrl: U2 })];
+
+    const { ctx, calls } = createCtx((url) => (url === U2 ? NG_ROBOTS : OK));
+    const out = await gate(ctx, entries, items);
+
+    expect(out.entries.map((e) => e.sourceUrl)).toEqual([U1, U2]);
+    expect(out.excluded).toHaveLength(0);
+    // 決定的な結果なので、ネットワーク障害のような再試行はしない。
+    expect(calls.filter((c) => c.url === U2)).toHaveLength(1);
+  });
+
   it('checkReachable が ok:false を返す URL を除外し、到達する URL は残す', async () => {
     const items = [makeItem('i1', U1), makeItem('i2', U2)];
     const entries = [makeEntry({ itemId: 'i1', sourceUrl: U1 }), makeEntry({ itemId: 'i2', sourceUrl: U2 })];
