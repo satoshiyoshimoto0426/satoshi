@@ -29,15 +29,17 @@ has_version() {
 # 貼り付け間違いや期限切れを、デプロイの当日ではなくこの場で見つけるため。
 verify_line_token() {
   local token="$1" body status
-  body="$(curl -sS -m 15 -o /dev/stdout -w '\n%{http_code}' \
-    -H "Authorization: Bearer ${token}" https://api.line.me/v2/bot/info 2>/dev/null)" || {
+  # トークンを curl の引数に置かない(引数は ps で他の利用者から見えるため)。
+  body="$(printf 'header = "Authorization: Bearer %s"\n' "${token}" \
+    | curl -sS -m 15 -o /dev/stdout -w '\n%{http_code}' \
+      --config - https://api.line.me/v2/bot/info 2>/dev/null)" || {
     echo "  ! 確認できませんでした(ネットワークに出られない環境の可能性)。先に進めます。"
     return 0
   }
   status="$(printf '%s' "${body}" | tail -n1)"
   if [[ "${status}" == "200" ]]; then
     local display
-    display="$(printf '%s' "${body}" | head -n-1 | sed -n 's/.*"displayName":"\([^"]*\)".*/\1/p')"
+    display="$(printf '%s' "${body}" | sed '$d' | sed -n 's/.*"displayName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
     echo "  ✓ 確認できました: ${display:-(アカウント名を取得できませんでした)}"
     return 0
   fi

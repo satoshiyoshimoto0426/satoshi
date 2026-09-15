@@ -135,12 +135,13 @@ export PROJECT_ID=<Google Cloud のプロジェクト ID>
 
 bash infra/bootstrap.sh      # API 有効化・状態バケット・権限・鍵なし認証・シークレットの箱
 bash scripts/set-secrets.sh  # トークンの値を投入(画面に表示されません)
+bash scripts/preflight.sh    # 投入できたかを点検(読み取りだけ。変更しません)
 ```
 
 `set-secrets.sh` で入れる 4 つの値の取り方は
 [docs/06_認証情報の取得手順.md](docs/06_認証情報の取得手順.md) を参照してください。
 
-最後に表示されるリポジトリ変数 5 つを GitHub の
+最後に表示されるリポジトリ変数 6 つを GitHub の
 `Settings > Secrets and variables > Actions > Variables` に設定すれば完了です。
 
 認証はサービスアカウントキーではなく Workload Identity 連携を使うため、

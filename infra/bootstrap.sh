@@ -171,22 +171,44 @@ else
   echo "  プールを作成しました: ${POOL_ID}"
 fi
 
+# attribute-condition は必須。これが無いと「GitHub 上の任意のリポジトリ」から
+# 認証できてしまう。このリポジトリ 1 つに限定する。
+#
+# プルリクエストの ref も許可している理由:
+#   .github/workflows/deploy.yml は infra/terraform/** と Dockerfile を触る
+#   プルリクエストで terraform plan を出す。このときの OIDC トークンの ref は
+#   refs/heads/... ではなく refs/pull/<番号>/merge になるため、ブランチだけに
+#   絞ると plan が必ず認証で落ちる。
+#   フォークからのプルリクエストには GitHub が id-token を発行しないので、
+#   ここで許可されるのは assertion.repository が一致する
+#   このリポジトリ自身のプルリクエストだけに限られる。
+#   プルリクエストでの plan が不要なら、|| 以降を削って deploy.yml の
+#   pull_request トリガも外すこと(両方を揃えないと赤いままになる)。
+ATTRIBUTE_CONDITION="assertion.repository == '${GITHUB_REPO}' && (assertion.ref == 'refs/heads/${DEPLOY_BRANCH}' || assertion.ref.startsWith('refs/pull/'))"
+ATTRIBUTE_MAPPING="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner,attribute.ref=assertion.ref"
+
+# 既にある場合も条件を上書きする。作成時にだけ条件を書くと、
+# 間違った GITHUB_REPO で一度作ってしまったあと、このスクリプトを何度実行しても
+# 直らない(条件が古いまま残り、認証が通らない理由も分からない)状態になる。
 if gcloud iam workload-identity-pools providers describe "${PROVIDER_ID}" \
   --project "${PROJECT_ID}" --location global --workload-identity-pool "${POOL_ID}" >/dev/null 2>&1; then
-  echo "  プロバイダは既にあります: ${PROVIDER_ID}"
+  retry gcloud iam workload-identity-pools providers update-oidc "${PROVIDER_ID}" \
+    --project "${PROJECT_ID}" --location global \
+    --workload-identity-pool "${POOL_ID}" \
+    --attribute-mapping "${ATTRIBUTE_MAPPING}" \
+    --attribute-condition "${ATTRIBUTE_CONDITION}" >/dev/null
+  echo "  プロバイダの条件を最新にしました: ${PROVIDER_ID}"
 else
-  # attribute-condition は必須。これが無いと「GitHub 上の任意のリポジトリ」から
-  # 認証できてしまう。このリポジトリ 1 つに限定する。
   gcloud iam workload-identity-pools providers create-oidc "${PROVIDER_ID}" \
     --project "${PROJECT_ID}" --location global \
     --workload-identity-pool "${POOL_ID}" \
     --display-name "GitHub OIDC" \
     --issuer-uri "https://token.actions.githubusercontent.com" \
-    --attribute-mapping "google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner,attribute.ref=assertion.ref" \
-    --attribute-condition "assertion.repository == '${GITHUB_REPO}' && assertion.ref == 'refs/heads/${DEPLOY_BRANCH}'"
+    --attribute-mapping "${ATTRIBUTE_MAPPING}" \
+    --attribute-condition "${ATTRIBUTE_CONDITION}"
   echo "  プロバイダを作成しました: ${PROVIDER_ID}"
-  echo "  認証できるのは ${GITHUB_REPO} の ${DEPLOY_BRANCH} ブランチのみです"
 fi
+echo "  認証できるのは ${GITHUB_REPO} の ${DEPLOY_BRANCH} ブランチと、そのプルリクエストのみです"
 
 PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
 POOL_NAME="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL_ID}"
@@ -237,7 +259,7 @@ cat <<EOF
       GCP_DEPLOY_SA            ${DEPLOY_SA_EMAIL}
       TF_STATE_BUCKET          ${STATE_BUCKET}
 
-    gh コマンドが使えるなら、この 5 行をそのまま実行しても設定できます:
+    gh コマンドが使えるなら、この 6 行をそのまま実行しても設定できます:
 
       gh variable set GCP_PROJECT_ID   --body "${PROJECT_ID}"   --repo ${GITHUB_REPO}
       gh variable set GCP_REGION       --body "${REGION}"       --repo ${GITHUB_REPO}
