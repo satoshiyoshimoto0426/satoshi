@@ -23,6 +23,7 @@ import { DEFAULT_CONFIG_DIR, loadConfig, validateCrossReferences } from './confi
 import { createContext } from './context.js';
 import { fetchSource } from './fetchers/index.js';
 import { runCollect } from './pipeline/collect.js';
+import { diagnoseSource } from './pipeline/diagnose.js';
 import { approveDigest, runDeliver } from './pipeline/deliver.js';
 import { runSummarize } from './pipeline/summarize.js';
 import { ConfigError } from './types.js';
@@ -351,6 +352,11 @@ interface ApproveCliOptions {
   date: string;
   channel: string;
 }
+interface DiagnoseSourcesCliOptions {
+  source?: string[];
+  out?: string;
+}
+
 interface VerifySourcesCliOptions {
   source?: string[];
   fix?: boolean;
@@ -632,6 +638,57 @@ program
   );
 
 program
+  .command('diagnose-sources')
+  .description('NG ソースの直し方を調べる。実ページからセレクタ候補を出す(何も書き換えない)')
+  .option('--source <id...>', '対象ソース id。省略時は全ソース')
+  .option('--out <path>', '結果の JSON 出力先', 'diagnose-report.json')
+  .action((options: DiagnoseSourcesCliOptions) =>
+    runCommand('diagnose-sources', async (logger) => {
+      const ctx = await createContext({ logger });
+      const sources = selectSources(ctx, options.source);
+
+      // 直列に回す。HttpClient がホスト単位で 2 秒間隔を守る(NFR-07)。
+      const rows = [];
+      for (const source of sources) {
+        rows.push(await diagnoseSource(ctx, source));
+      }
+
+      const outPath = path.resolve(options.out ?? 'diagnose-report.json');
+      fs.writeFileSync(
+        outPath,
+        JSON.stringify({ generatedAt: ctx.clock.now().toISOString(), rows }, null, 2),
+      );
+
+      // 画面には要約だけ出す。詳細は JSON を見る(端末に流すと読めないため)。
+      let ok = 0;
+      let selectorNg = 0;
+      let unreachable = 0;
+      for (const row of rows) {
+        const reachable = row.status !== null && row.status >= 200 && row.status < 300;
+        if (!reachable) {
+          unreachable += 1;
+          console.log(`× ${row.sourceId}  ${row.error ?? `HTTP ${String(row.status)}`}  ${row.url ?? ''}`);
+          continue;
+        }
+        if (row.currentLinks !== null && row.currentLinks === 0) {
+          selectorNg += 1;
+          const best = row.candidates[0];
+          const hint = best === undefined ? '候補なし' : `候補: ${best.selector}(${String(best.links)}件)`;
+          console.log(`! ${row.sourceId}  セレクタが当たっていません  ${hint}`);
+          continue;
+        }
+        ok += 1;
+      }
+
+      console.log('');
+      console.log(
+        `到達かつ抽出できた: ${String(ok)}件 / セレクタ不一致: ${String(selectorNg)}件 / 到達不可: ${String(unreachable)}件`,
+      );
+      console.log(`詳細(セレクタ候補と実例)を書き出しました: ${outPath}`);
+      logger.info('診断しました', { ok, selectorNg, unreachable, out: outPath });
+    }),
+  )
+
   .command('health')
   .description('異常のあるソースの一覧を出す(連続失敗 / 候補 0 件。運用手順書 §3.2)')
   .action(() =>
