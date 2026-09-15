@@ -182,23 +182,39 @@ async function verifySource(ctx: AppContext, source: SourceConfig): Promise<Veri
   }
 
   const statusText = String(reach.status ?? 200);
-  if (source.type !== 'html') {
-    return { sourceId: source.id, enabled: source.enabled, ok: true, status: statusText, url, reason: null };
-  }
 
-  // html はセレクタ検証まで行う。state を null で渡し、条件付き GET(304)で
-  // 候補 0 件になるのを避ける ― ここで見たいのは「いま何件取れるか」なので。
+  // 到達確認だけで OK にしてはいけない。200 を返すのに 1 件も取れない配信元は
+  // 「巡回は成功、中身は永久に 0 件」という最も気づきにくい壊れ方をする。
+  // state を null で渡し、条件付き GET(304)で 0 件になるのを避ける
+  // ― ここで見たいのは「いま何件取れるか」なので。
   try {
     const result = await fetchSource(source, ctx.http, null, ctx.clock);
     const count = result.candidates.length;
     if (count === 0) {
+      // e-Gov だけは 0 件が正常でありうる。法令改正の公布が lookbackDays の間に
+      // 無ければ 0 件になるのが正しい挙動で、これを NG にすると --fix が
+      // 「改正が無かった日」に基幹ソースを無効化してしまう。
+      if (source.type === 'egov') {
+        return {
+          sourceId: source.id,
+          enabled: source.enabled,
+          ok: true,
+          status: `${statusText} 改正 0 件`,
+          url,
+          reason: null,
+        };
+      }
+      const cause =
+        source.type === 'html'
+          ? `itemSelector '${source.html?.itemSelector ?? '?'}' が失効した可能性`
+          : 'フィードが空か、RSS/Atom として解釈できない可能性';
       return {
         sourceId: source.id,
         enabled: source.enabled,
         ok: false,
         status: `${statusText} 候補 0 件`,
         url,
-        reason: `候補 0 件(itemSelector '${source.html?.itemSelector ?? '?'}' が失効した可能性)`,
+        reason: `候補 0 件(${cause})`,
       };
     }
     return {
