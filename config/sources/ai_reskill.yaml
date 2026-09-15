@@ -1,0 +1,245 @@
+# =============================================================================
+# ai_reskill チャネル向けソース(要件定義書 §5.2 / 詳細設計書 §4.2)
+# id 接頭辞: ai_
+#
+# !!! 重要 !!!
+# 本ファイルの URL と CSS セレクタは未検証である。
+# 本番投入前に必ず `pnpm cli verify-sources --fix` を実行し、
+#   (1) URL への到達確認(HTTP ステータス)
+#   (2) HTML ソースのセレクタ検証(候補リンクが 1 件以上取れるか)
+# を行い、NG のものを修正すること。「到達はするが候補 0 件」= セレクタ不一致は
+# 静かに見落としを生むため、verify-sources では NG 扱いにしている。
+#
+# 方針(詳細設計書 §14):
+# - 年度で URL が変わる個別記事ではなく「新着一覧 / 制度トップ」を監視する。
+# - RSS が取れるものは RSS を優先する(サイト改修に強い、要件定義書 §10 のリスク対策)。
+# - itemSelector は広めに取り、includeUrlPatterns で当該サイト配下に絞ってノイズを抑える。
+#   PDF の通知本体は /content/ 配下に置かれることが多いので include に含めている。
+#
+# region は全て null(国のソース。FR-18 の地域表記は自治体ソース側で付与する)。
+# =============================================================================
+sources:
+  # ---------------------------------------------------------------------------
+  # 厚労省 新着情報(RSS)
+  # 雇用・労働と障害福祉の両方が流れる基幹ソースのため両チャネルに紐付ける。
+  # 要検証: RDF(RSS 1.0)の URL。到達しない場合は https://www.mhlw.go.jp/stf/ の
+  #         新着情報一覧を html ソースとして登録し直すこと。
+  # ---------------------------------------------------------------------------
+  - id: ai_mhlw_news_rss
+    name: 厚生労働省 新着情報
+    type: rss
+    url: https://www.mhlw.go.jp/stf/news.rdf
+    channels: [ai_reskill, welfare]
+    priority: high
+    region: null
+    enabled: true
+    note: 厚労省サイト全体の新着を拾い、助成金・給付金・障害福祉の通知を取りこぼさないための基幹ソース。
+
+  # ---------------------------------------------------------------------------
+  # 厚労省 報道発表資料。新着情報 RSS が壊れたときの保険も兼ねる二重化。
+  # 要検証: itemSelector。厚労省は本文領域が id="contents"。
+  #         代替候補: 'main a' / '.m-listNews a'
+  # ---------------------------------------------------------------------------
+  - id: ai_mhlw_houdou
+    name: 厚生労働省 報道発表資料
+    type: html
+    url: https://www.mhlw.go.jp/stf/houdou/index.html
+    channels: [ai_reskill, welfare]
+    priority: medium
+    region: null
+    enabled: true
+    html:
+      itemSelector: '#contents a'
+      dateSelector: null
+      includeUrlPatterns: ['mhlw.go.jp/stf/', 'mhlw.go.jp/content/', 'mhlw.go.jp/new-info/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 助成金の制度変更や給付金の要件改正が報道発表として先に出るため、新着 RSS と二重化して監視する。
+
+  # ---------------------------------------------------------------------------
+  # 人材開発(職業能力開発)分野トップ。個別助成金ページが移動しても、
+  # 分野トップから新しい導線が張られるため、壊れにくい「受け皿」として登録する。
+  # 要検証: URL とセレクタ。代替候補: 'main a'
+  # ---------------------------------------------------------------------------
+  - id: ai_mhlw_jinzai_kaihatsu_top
+    name: 厚生労働省 人材開発(職業能力開発)分野トップ
+    type: html
+    url: https://www.mhlw.go.jp/stf/seisakunitsuite/bunya/koyou_roudou/jinzaikaihatsu/index.html
+    channels: [ai_reskill]
+    priority: medium
+    region: null
+    enabled: true
+    html:
+      itemSelector: '#contents a'
+      dateSelector: null
+      includeUrlPatterns: ['mhlw.go.jp/stf/', 'mhlw.go.jp/content/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 職業能力開発促進法・人材開発施策の全体更新を検知し、個別ページの URL 変更にも追随するための受け皿。
+
+  # ---------------------------------------------------------------------------
+  # 人材開発支援助成金。コース新設・廃止、支給要件と助成率の改正を検知する。
+  # 要検証: URL(d01-1.html は年度改編で変わることがある)とセレクタ。
+  #         NG なら ai_mhlw_jinzai_kaihatsu_top から現行 URL を辿って差し替えること。
+  # ---------------------------------------------------------------------------
+  - id: ai_mhlw_jinzai_kaihatsu_josei
+    name: 厚生労働省 人材開発支援助成金
+    type: html
+    url: https://www.mhlw.go.jp/stf/seisakunitsuite/bunya/koyou_roudou/koyou/kyufukin/d01-1.html
+    channels: [ai_reskill]
+    priority: high
+    region: null
+    enabled: true
+    html:
+      itemSelector: '#contents a'
+      dateSelector: null
+      includeUrlPatterns: ['mhlw.go.jp/stf/', 'mhlw.go.jp/content/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 人材開発支援助成金のコース改編・支給要件・助成率・様式変更を検知する(見落とすと申請不可に直結)。
+
+  # ---------------------------------------------------------------------------
+  # 教育訓練給付制度。指定講座の追加・給付率改正を検知する。
+  # 要検証: URL とセレクタ。代替候補: 'main a'
+  # ---------------------------------------------------------------------------
+  - id: ai_mhlw_kyoiku_kunren_kyufu
+    name: 厚生労働省 教育訓練給付制度
+    type: html
+    url: https://www.mhlw.go.jp/stf/seisakunitsuite/bunya/koyou_roudou/koyou/kyouiku_kunren/index.html
+    channels: [ai_reskill]
+    priority: high
+    region: null
+    enabled: true
+    html:
+      itemSelector: '#contents a'
+      dateSelector: null
+      includeUrlPatterns: ['mhlw.go.jp/stf/', 'mhlw.go.jp/content/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 専門実践・特定一般教育訓練給付の指定講座追加や給付率・要件の改正を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 経産省 新着情報(プレスリリース)。
+  # 要検証: itemSelector。代替候補: '#main a' / '.press-list a'
+  # ---------------------------------------------------------------------------
+  - id: ai_meti_press
+    name: 経済産業省 新着情報(プレスリリース)
+    type: html
+    url: https://www.meti.go.jp/press/index.html
+    channels: [ai_reskill]
+    priority: high
+    region: null
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['meti.go.jp/press/', 'meti.go.jp/policy/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: リスキリング支援事業・AI 関連ガイドライン・補助金公募の発表を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 経産省 人材政策(リスキリング関連)。事業の公募開始・要領改訂を検知する。
+  # 要検証: URL とセレクタ。NG なら https://www.meti.go.jp/policy/economy/jinzai/ を試すこと。
+  # ---------------------------------------------------------------------------
+  - id: ai_meti_reskilling
+    name: 経済産業省 人材政策(リスキリング関連)
+    type: html
+    url: https://www.meti.go.jp/policy/economy/jinzai/index.html
+    channels: [ai_reskill]
+    priority: high
+    region: null
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['meti.go.jp/policy/', 'meti.go.jp/press/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: リスキリングを通じたキャリアアップ支援事業など、人材政策の公募・要領改訂を検知する。
+
+  # ---------------------------------------------------------------------------
+  # デジタル庁 新着情報。
+  # デジタル庁サイトは JavaScript でレンダリングされる部分が多く HTML 差分監視が壊れやすいため、
+  # RSS を第一候補にしている。
+  # 要検証: フィード URL。NG なら https://www.digital.go.jp/news を html ソース
+  #         (itemSelector: 'main a')として登録し直すこと。
+  # ---------------------------------------------------------------------------
+  - id: ai_digital_news_rss
+    name: デジタル庁 新着情報
+    type: rss
+    url: https://www.digital.go.jp/rss/news.xml
+    channels: [ai_reskill]
+    priority: high
+    region: null
+    enabled: true
+    note: デジタル人材育成施策・行政 AI 利活用の方針やガイドライン公表を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 総務省 AI 関連(情報通信政策)。AI 事業者ガイドラインは総務省・経産省の共管。
+  # 報道資料全体は量が多くコスト(NFR-04)に響くため、ICT 政策配下に絞って監視する。
+  # 要検証: URL とセレクタ。代替候補: '#contents a' / '#main a'
+  # ---------------------------------------------------------------------------
+  - id: ai_soumu_ict_ai
+    name: 総務省 情報通信政策(AI 関連)
+    type: html
+    url: https://www.soumu.go.jp/menu_seisaku/ictseisaku/index.html
+    channels: [ai_reskill]
+    priority: medium
+    region: null
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns:
+        [
+          'soumu.go.jp/menu_seisaku/',
+          'soumu.go.jp/menu_news/',
+          'soumu.go.jp/main_content/',
+          'soumu.go.jp/main_sosiki/',
+        ]
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: AI 事業者ガイドラインの改定や AI ネットワーク社会推進会議の検討状況を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 内閣府 AI 戦略会議 / AI 制度研究会。AI 関連法制の方向性が最初に出る場。
+  # 要検証: URL とセレクタ。www8.cao.go.jp は旧構成のため 'main' が無い可能性が高い。
+  #         候補 0 件なら itemSelector を '#contents a' もしくは 'body a' に変えて再検証すること。
+  # ---------------------------------------------------------------------------
+  - id: ai_cao_ai_strategy
+    name: 内閣府 AI 戦略会議 / AI 制度研究会
+    type: html
+    url: https://www8.cao.go.jp/cstp/ai/index.html
+    channels: [ai_reskill]
+    priority: high
+    region: null
+    enabled: true
+    html:
+      itemSelector: '#contents a'
+      dateSelector: null
+      includeUrlPatterns: ['cao.go.jp/cstp/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: AI 関連法制・AI 制度の検討資料や取りまとめ公表を検知し、法制化の動きを早期に掴む。
+
+  # ---------------------------------------------------------------------------
+  # 中小企業庁 補助金・支援策。研修費用に使える補助金の公募開始を検知する。
+  # 要検証: トップページのセレクタ。代替候補: '#contents a' / '.news a'
+  #         RSS が提供されていることが確認できたら type: rss に切り替えるほうが堅い。
+  # ---------------------------------------------------------------------------
+  - id: ai_chusho_shien
+    name: 中小企業庁 新着情報(補助金・支援策)
+    type: html
+    url: https://www.chusho.meti.go.jp/
+    channels: [ai_reskill]
+    priority: medium
+    region: null
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['chusho.meti.go.jp/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 人材育成・DX 関連の補助金公募開始や支援策の新設を検知する。

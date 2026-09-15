@@ -1,0 +1,270 @@
+# デプロイ(タスク M0-03 / M1-10 / M2-08)
+#
+# main への push で自動的に本番へ反映する。pull request では terraform plan だけを出し、
+# 適用はしない(差分を読んでからマージできるようにするため)。
+#
+# 認証はサービスアカウントキーではなく Workload Identity 連携を使う。
+# 鍵を GitHub に置かないので、漏えい時の影響が「短命トークン 1 本」に限定される(NFR-03)。
+# 初期設定は infra/bootstrap.sh が行う。
+name: デプロイ
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'config/**'
+      - 'infra/terraform/**'
+      - 'Dockerfile'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/deploy.yml'
+  pull_request:
+    paths:
+      - 'infra/terraform/**'
+      - 'Dockerfile'
+  workflow_dispatch:
+    inputs:
+      skip_smoke_test:
+        description: 'デプロイ後の疎通確認(ドライラン)を省略する'
+        type: boolean
+        default: false
+
+# tfstate のロックは state 単位なので、グループも state 単位にする。
+# ref ごとにすると、PR の terraform plan と main の apply が同時に走って
+# 「Error acquiring the state lock」で落ちる。前の実行は待たせる(打ち切らない)。
+concurrency:
+  group: terraform-${{ vars.TF_STATE_BUCKET }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # Workload Identity 連携に必要
+
+jobs:
+  deploy:
+    name: ビルドして Google Cloud へ反映
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # 設定が揃っていないリポジトリで毎回失敗させない。
+    # フォークからの pull request は id-token が降りず認証が必ず失敗するので走らせない
+    # (このリポジトリは公開設定のため、誰でもフォークして PR を出せる)。
+    if: >-
+      vars.GCP_PROJECT_ID != '' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION || 'asia-northeast1' }}
+      STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      # Firestore のロケーションは作成後に変更できない。REGION を後から変えても
+      # Firestore だけ元の場所に残るため、独立した変数として明示的に渡す。
+      FIRESTORE_LOCATION: ${{ vars.GCP_FIRESTORE_LOCATION || vars.GCP_REGION || 'asia-northeast1' }}
+      REPOSITORY: seido-watch
+
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v4
+
+      # --- 品質ゲート -----------------------------------------------------
+      # CI と重複するが、デプロイ経路単体でも壊れたものを本番へ出さないようにする。
+      - name: pnpm を用意
+        uses: pnpm/action-setup@v4
+
+      - name: Node 22 を用意
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+
+      - name: 依存をインストール
+        run: pnpm install --frozen-lockfile
+
+      - name: 検証(lint / typecheck / test / 設定)
+        run: |
+          pnpm lint
+          pnpm typecheck
+          pnpm test
+          pnpm cli validate-config
+        env:
+          DRY_RUN: 'true'
+          STORE_KIND: memory
+
+      # --- 認証 -----------------------------------------------------------
+      - name: Google Cloud へ認証(鍵なし)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - name: gcloud を用意
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Artifact Registry への docker 認証
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      # --- イメージ -------------------------------------------------------
+      - name: イメージのタグを決める
+        id: image
+        run: |
+          # コミット SHA をタグにする。どのコミットが動いているか後から必ず追える。
+          TAG="${GITHUB_SHA::12}"
+          URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/seido-watch:${TAG}"
+          echo "uri=${URI}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Buildx を用意
+        uses: docker/setup-buildx-action@v3
+
+      # Artifact Registry のリポジトリは Terraform が作る。
+      # 初回はまだ存在しないので、イメージのプッシュより先に Terraform を通す必要がある。
+      # そのため Terraform は 2 段階で流す(1 回目はレジストリまで、2 回目でジョブを更新)。
+      - name: Terraform を用意
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+
+      - name: Terraform 初期化
+        working-directory: infra/terraform
+        run: |
+          # .terraform.lock.hcl がコミットされていれば、それを厳密に使う
+          # (プロバイダのバージョンを固定し、CI と手元で同じものを使うため)。
+          # まだ無い場合は解決してから進む(初回)。
+          if [[ -f .terraform.lock.hcl ]]; then
+            terraform init -input=false -lockfile=readonly \
+              -backend-config="bucket=${STATE_BUCKET}" \
+              -backend-config="prefix=seido-watch"
+          else
+            echo "::warning::.terraform.lock.hcl がコミットされていません。" \
+                 "初回デプロイ後に 'terraform init' を手元で実行し、生成された lock ファイルをコミットしてください。"
+            terraform init -input=false \
+              -backend-config="bucket=${STATE_BUCKET}" \
+              -backend-config="prefix=seido-watch"
+          fi
+
+      - name: 書式と構文を検査
+        working-directory: infra/terraform
+        run: |
+          terraform fmt -check -recursive
+          terraform validate
+
+      # --- pull request では差分を出すだけ --------------------------------
+      - name: 差分を確認(pull request)
+        if: github.event_name == 'pull_request'
+        working-directory: infra/terraform
+        run: |
+          terraform plan -input=false -no-color \
+            -var="project_id=${PROJECT_ID}" \
+            -var="region=${REGION}" \
+            -var="firestore_location=${FIRESTORE_LOCATION}" \
+            -var="image=${{ steps.image.outputs.uri }}"
+
+      # --- 本番反映 -------------------------------------------------------
+      - name: レジストリを先に作る(初回のため)
+        if: github.event_name != 'pull_request'
+        working-directory: infra/terraform
+        run: |
+          # イメージを push する先が無いと build-push が失敗するので、
+          # 依存の少ないリソースだけ先に作る。2 回目以降は変更なしで即終了する。
+          terraform apply -input=false -auto-approve \
+            -target=google_project_service.services \
+            -target=google_artifact_registry_repository.docker \
+            -var="project_id=${PROJECT_ID}" \
+            -var="region=${REGION}" \
+            -var="firestore_location=${FIRESTORE_LOCATION}" \
+            -var="image=${{ steps.image.outputs.uri }}"
+
+      - name: イメージをビルドして push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.image.outputs.uri }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Terraform で反映
+        if: github.event_name != 'pull_request'
+        working-directory: infra/terraform
+        run: |
+          terraform apply -input=false -auto-approve \
+            -var="project_id=${PROJECT_ID}" \
+            -var="region=${REGION}" \
+            -var="firestore_location=${FIRESTORE_LOCATION}" \
+            -var="image=${{ steps.image.outputs.uri }}"
+
+      # --- 反映後の確認 ---------------------------------------------------
+      # (1) 反映されたことの確定的な確認。3 ジョブすべてが新しいイメージを指しているか。
+      #     ここが食い違っていたら apply が意図どおりに効いていない。
+      - name: 反映されたイメージを照合
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          expected='${{ steps.image.outputs.uri }}'
+          fail=0
+          for job in collect summarize deliver; do
+            # --format のフィールドパスは gcloud が返す表現(v1 / v2)で異なり、
+            # 存在しないキーを指定してもエラーにならず空文字が返る = 常に不一致になる。
+            # 表現に依存しないよう JSON 全体から完全一致を探す。
+            json="$(gcloud run jobs describe "seido-watch-${job}" \
+              --region "${REGION}" --project "${PROJECT_ID}" --format=json)"
+            if grep -qF "\"${expected}\"" <<<"${json}"; then
+              echo "✓ seido-watch-${job}"
+            else
+              echo "× seido-watch-${job}: 期待したイメージ ${expected} が見つかりません" >&2
+              fail=1
+            fi
+          done
+          exit "${fail}"
+
+      # (2) 実行時の確認。イメージが起動し、設定 YAML が読めることを確かめる。
+      #
+      #     deliver --dry-run は使わない。当日の digest がまだ無い時間帯
+      #     (summarize は 07:00 JST)には「ダイジェストがありません」で必ず失敗し、
+      #     さらに Slack へ error 通知を飛ばして障害アラートまで誤発報するため。
+      #     validate-config なら副作用が無く、設定の壊れは確実に捕まえられる。
+      - name: 疎通確認(配信はしない)
+        if: github.event_name != 'pull_request' && inputs.skip_smoke_test != true
+        run: |
+          set -uo pipefail
+          out="$(gcloud run jobs execute seido-watch-deliver \
+            --region "${REGION}" --project "${PROJECT_ID}" --wait \
+            --args=validate-config 2>&1)" && status=0 || status=$?
+          echo "${out}"
+
+          if [[ "${status}" -eq 0 ]]; then
+            echo "✓ イメージが起動し、設定を読み込めました"
+            exit 0
+          fi
+
+          # --args による上書きは gcloud のバージョンによっては使えない。
+          # フラグが無いだけでデプロイ全体を失敗させたくないので、
+          # 「未知のフラグ」だけを見分けて警告に落とす(それ以外は本物の失敗)。
+          if grep -qiE 'unrecognized arguments|unknown flag' <<<"${out}"; then
+            echo "::warning::この gcloud では --args による引数の上書きが使えないため、起動確認を省略しました。" \
+                 "イメージの照合は成功しています。"
+            exit 0
+          fi
+
+          echo "::error::起動確認に失敗しました。シークレット未投入や設定不備の可能性があります。"
+          exit "${status}"
+
+      - name: 反映内容を表示
+        if: github.event_name != 'pull_request'
+        working-directory: infra/terraform
+        run: |
+          echo "### デプロイ完了" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 項目 | 値 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| イメージ | \`${{ steps.image.outputs.uri }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| コミット | ${GITHUB_SHA::12} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| プロジェクト | ${PROJECT_ID} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| リージョン | ${REGION} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "巡回 06/12/18/23 時、要約 07:00、配信 07:30(JST)で動きます。" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**本番投入が初回の場合、情報源の URL 検証がまだ済んでいません。**" >> "$GITHUB_STEP_SUMMARY"
+          echo "運用手順書 §8 の \`verify-sources\` を必ず実行してください。" >> "$GITHUB_STEP_SUMMARY"

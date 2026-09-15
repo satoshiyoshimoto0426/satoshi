@@ -1,0 +1,259 @@
+# =============================================================================
+# welfare チャネル向けソース(要件定義書 §5.3 / 詳細設計書 §4.2)
+# id 接頭辞: wf_
+#
+# !!! 重要 !!!
+# 本ファイルの URL と CSS セレクタは未検証である。
+# 本番投入前に必ず `pnpm cli verify-sources --fix` を実行し、
+#   (1) URL への到達確認(HTTP ステータス)
+#   (2) HTML ソースのセレクタ検証(候補リンクが 1 件以上取れるか)
+# を行い、NG のものを修正すること。「到達はするが候補 0 件」= セレクタ不一致は
+# 巡回しているのに永久に新着が出ないという最も気づきにくい故障なので、
+# 「OK が出た」ではなく「候補が取れた」ところまで必ず確認する。
+#
+# 方針(詳細設計書 §14):
+# - 官公庁ページは年度ごとに URL が変わる。個別記事ではなく「新着一覧 / 分野トップ」を監視する。
+# - itemSelector は広めに取り、includeUrlPatterns で当該サイト配下のリンクだけに絞る。
+#   これでセレクタが多少ずれてもノイズを拾いにくい。
+# - 通知本体が PDF で出ることが多い領域なので、include には PDF 置き場
+#   (厚労省は /content/、こども家庭庁は /assets/)も含めている。
+# - excludeUrlPatterns では SNS・スタイルシート・ページ内アンカーを落とす。
+#   '#' を除外しているのは、同一ページ内リンクが新着として大量に誤検知されるのを防ぐため。
+#
+# channels は全て [welfare]、region は全て null(国のソース。
+# FR-18 の地域表記は自治体ソース側で付与する。自治体は別ファイルで管理)。
+#
+# 厚労省 新着情報 RSS / 報道発表資料は common・ai_reskill 側のソースが
+# channels に welfare を含んでいるため、ここでは重複登録しない。
+# =============================================================================
+sources:
+  # ---------------------------------------------------------------------------
+  # 障害福祉サービス等報酬改定。welfare チャネルの中核ソース。
+  # 3 年に 1 度の改定本体に加え、改定後の Q&A・留意事項通知・単位数表の修正が
+  # 随時追加されるため、改定年でなくても常時 high で監視する。
+  # 要検証: URL とセレクタ。0000212398.html は「障害福祉サービス等報酬改定」の
+  #         索引ページのはずだが、年度ごとに _00001 形式の子ページへ移ることがある。
+  #         NG なら wf_mhlw_shougaishahukushi_top から現行 URL を辿って差し替えること。
+  #         itemSelector 代替候補: 'main a' / 'ul.m-listLink li a'
+  # ---------------------------------------------------------------------------
+  - id: wf_mhlw_shogai_hoshu_kaitei
+    name: 厚生労働省 障害福祉サービス等報酬改定
+    type: html
+    url: https://www.mhlw.go.jp/stf/seisakunitsuite/bunya/0000212398.html
+    channels: [welfare]
+    priority: high
+    region: null
+    enabled: true
+    html:
+      itemSelector: '#contents a'
+      dateSelector: null
+      includeUrlPatterns: ['mhlw.go.jp/stf/', 'mhlw.go.jp/content/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 報酬改定の告示・留意事項通知・Q&A・単位数表の追加改訂を検知する(請求誤りに直結するため最重要)。
+
+  # ---------------------------------------------------------------------------
+  # 社会保障審議会 障害者部会。報酬改定・法改正の方向性が最初に公になる場で、
+  # 「制度が変わる前に知る」という本システムの目的(要件定義書 §2)に最も効くソース。
+  # 要検証: URL。厚労省の審議会ページは shingi-hosho_<数字>.html 形式で、番号は
+  #         部会ごとに固定だが改編で変わることがある。NG の場合は
+  #         https://www.mhlw.go.jp/stf/shingi/shingi-hosho.html(社会保障審議会の部会一覧)
+  #         から「障害者部会」を辿って差し替えること。
+  #         itemSelector 代替候補: 'main a' / '#main a'
+  # ---------------------------------------------------------------------------
+  - id: wf_mhlw_shogaisha_bukai
+    name: 厚生労働省 社会保障審議会 障害者部会
+    type: html
+    url: https://www.mhlw.go.jp/stf/shingi/shingi-hosho_126734.html
+    channels: [welfare]
+    priority: high
+    region: null
+    enabled: true
+    html:
+      itemSelector: '#contents a'
+      dateSelector: null
+      includeUrlPatterns: ['mhlw.go.jp/stf/shingi/', 'mhlw.go.jp/stf/newpage', 'mhlw.go.jp/content/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 報酬改定や障害者総合支援法改正の議論・とりまとめ資料を検知し、制度変更を事前に掴む。
+
+  # ---------------------------------------------------------------------------
+  # 法令等データベース(通知検索)。課長通知・事務連絡など「官報に載らないが
+  # 現場の運用を決める文書」を拾うためのソース。
+  # 要検証: URL とセレクタ。/hourei/ 直下に新着一覧が無い場合は、
+  #         新着通知の一覧ページ(例: https://www.mhlw.go.jp/hourei/新着 相当)を探して差し替えること。
+  #         検索結果ページ(/web/t_doc?dataId=...)は GET パラメータ付きで
+  #         毎回 URL が変わり差分監視に向かないため、一覧側を監視する。
+  #         itemSelector 代替候補: 'main a' / 'table a'
+  # ---------------------------------------------------------------------------
+  - id: wf_mhlw_hourei_db
+    name: 厚生労働省 法令等データベース(通知検索)
+    type: html
+    url: https://www.mhlw.go.jp/hourei/
+    channels: [welfare]
+    priority: high
+    region: null
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['mhlw.go.jp/hourei/', 'mhlw.go.jp/web/', 'mhlw.go.jp/content/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 指定基準・運営基準に関する課長通知や事務連絡の発出を検知する(報道発表されない通知の受け皿)。
+
+  # ---------------------------------------------------------------------------
+  # 障害保健福祉分野トップ。個別ページが年度改編で移動しても、分野トップから
+  # 新しい導線が張られるため「取りこぼしの受け皿」として登録する。
+  # 要検証: URL とセレクタ。代替候補: 'main a'
+  # ---------------------------------------------------------------------------
+  - id: wf_mhlw_shougaishahukushi_top
+    name: 厚生労働省 障害者福祉(障害保健福祉)分野トップ
+    type: html
+    url: https://www.mhlw.go.jp/stf/seisakunitsuite/bunya/hukushi_kaigo/shougaishahukushi/index.html
+    channels: [welfare]
+    priority: medium
+    region: null
+    enabled: true
+    html:
+      itemSelector: '#contents a'
+      dateSelector: null
+      includeUrlPatterns: ['mhlw.go.jp/stf/', 'mhlw.go.jp/content/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 障害保健福祉分野全体の更新を検知し、個別ページの URL 変更にも追随するための受け皿。
+
+  # ---------------------------------------------------------------------------
+  # 障害福祉サービスの内容・指定基準。就労移行支援 / 就労継続支援 A 型・B 型 /
+  # 就労選択支援(令和 7 年度創設)の運用ルール改正を取りこぼさないために登録する。
+  # 要検証: URL とセレクタ。service/ 配下の構成は改編されやすい。
+  #         NG なら wf_mhlw_shougaishahukushi_top から現行 URL を辿って差し替えること。
+  # ---------------------------------------------------------------------------
+  - id: wf_mhlw_shougai_service
+    name: 厚生労働省 障害福祉サービスについて(サービス内容・指定基準)
+    type: html
+    url: https://www.mhlw.go.jp/stf/seisakunitsuite/bunya/hukushi_kaigo/shougaishahukushi/service/index.html
+    channels: [welfare]
+    priority: medium
+    region: null
+    enabled: true
+    html:
+      itemSelector: '#contents a'
+      dateSelector: null
+      includeUrlPatterns: ['mhlw.go.jp/stf/', 'mhlw.go.jp/content/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 就労移行支援・就労継続支援A型B型・就労選択支援の基準や運用の改正を検知する。
+
+  # ---------------------------------------------------------------------------
+  # 障害者雇用対策。就労選択支援や一般就労移行は雇用側(職業安定局)の施策と
+  # 連動して変わるため、福祉側だけ見ていると片肺になる。
+  # 要検証: URL とセレクタ。代替候補: 'main a'
+  # ---------------------------------------------------------------------------
+  - id: wf_mhlw_shougaisha_koyou
+    name: 厚生労働省 障害者雇用対策
+    type: html
+    url: https://www.mhlw.go.jp/stf/seisakunitsuite/bunya/koyou_roudou/koyou/shougaishakoyou/index.html
+    channels: [welfare]
+    priority: medium
+    region: null
+    enabled: true
+    html:
+      itemSelector: '#contents a'
+      dateSelector: null
+      includeUrlPatterns: ['mhlw.go.jp/stf/', 'mhlw.go.jp/content/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 法定雇用率・障害者雇用納付金・就労支援施策の改正を検知し、就労系サービスの制度変更を補完する。
+
+  # ---------------------------------------------------------------------------
+  # こども家庭庁 新着情報。児童発達支援・放課後等デイサービスの所管は
+  # こども家庭庁に移っているため、障害児支援は厚労省だけ見ていると落ちる。
+  # 要検証: URL とセレクタ。RSS が提供されていることが確認できたら
+  #         type: rss + フィード URL に切り替えるほうが堅い(サイト改修に強い)。
+  #         こども家庭庁サイトは JavaScript 描画の比率が高く、'main a' で候補 0 件になる
+  #         可能性がある。その場合は 'body a' + includeUrlPatterns での絞り込みを試すこと。
+  # ---------------------------------------------------------------------------
+  - id: wf_cfa_news
+    name: こども家庭庁 新着情報
+    type: html
+    url: https://www.cfa.go.jp/news
+    channels: [welfare]
+    priority: medium
+    region: null
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['cfa.go.jp/news/', 'cfa.go.jp/policies/', 'cfa.go.jp/assets/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: こども家庭庁全体の新着から障害児支援・こども政策関連の通知を取りこぼさないための基幹ソース。
+
+  # ---------------------------------------------------------------------------
+  # こども家庭庁 障害児支援。児童発達支援・放課後等デイサービスのガイドライン、
+  # 報酬・基準に関する通知が直接置かれる分野ページ。
+  # 要検証: URL とセレクタ。NG なら wf_cfa_news から「障害児支援」を辿って差し替えること。
+  # ---------------------------------------------------------------------------
+  - id: wf_cfa_shougaiji_shien
+    name: こども家庭庁 障害児支援
+    type: html
+    url: https://www.cfa.go.jp/policies/shougaijishien
+    channels: [welfare]
+    priority: medium
+    region: null
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['cfa.go.jp/policies/', 'cfa.go.jp/assets/', 'cfa.go.jp/news/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 児童発達支援・放課後等デイサービスのガイドライン改訂や障害児支援の通知を検知する。
+
+  # ---------------------------------------------------------------------------
+  # こども家庭審議会 障害児支援部会。障害児通所支援の基準・報酬の見直しは
+  # ここで議論されるため、改正の予告として押さえる(priority は審議会ルールに従い high)。
+  # 要検証: URL とセレクタ。審議会の URL は部会新設・改組で変わりやすい。
+  #         NG なら https://www.cfa.go.jp/councils(審議会等の一覧)から辿って差し替えること。
+  # ---------------------------------------------------------------------------
+  - id: wf_cfa_shingikai_shougaiji
+    name: こども家庭庁 こども家庭審議会 障害児支援部会
+    type: html
+    url: https://www.cfa.go.jp/councils/shougaijishien
+    channels: [welfare]
+    priority: high
+    region: null
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['cfa.go.jp/councils/', 'cfa.go.jp/assets/', 'cfa.go.jp/policies/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 障害児通所支援の基準・報酬見直しの議論と資料公表を検知し、改正を事前に掴む。
+
+  # ---------------------------------------------------------------------------
+  # WAM NET(福祉医療機構)行政情報。国と自治体の通知を横断的に再掲するため、
+  # 省庁ページの監視が漏れたときの二重化として効く。
+  # 要検証: URL とセレクタ。要件定義書 §5.3 では RSS 指定だが、フィード URL を
+  #         確認できていないため html で登録している。RSS が確認できたら
+  #         type: rss + url をフィードに差し替えること(そのとき html ブロックは削除する。
+  #         type と html の食い違いはスキーマエラーになる)。
+  #         到達しない場合は https://www.wam.go.jp/ (トップ)を試すこと。
+  # ---------------------------------------------------------------------------
+  - id: wf_wamnet_gyousei
+    name: WAM NET(福祉医療機構)障害者福祉 行政情報
+    type: html
+    url: https://www.wam.go.jp/content/wamnet/pcpub/syogai/
+    channels: [welfare]
+    priority: medium
+    region: null
+    enabled: true
+    html:
+      itemSelector: 'main a'
+      dateSelector: null
+      includeUrlPatterns: ['wam.go.jp/content/']
+      excludeUrlPatterns:
+        ['javascript:', '#', '.css', 'twitter.com', 'facebook.com', 'line.me', 'youtube.com']
+    note: 障害福祉分野の行政通知を横断的に再掲するため、省庁ページ監視の取りこぼしを補う二重化ソース。

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF
+  xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+  xmlns="http://purl.org/rss/1.0/"
+  xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel rdf:about="https://www.example-mhlw.go.jp/stf/news.rdf">
+    <title>例示厚生労働省 新着情報</title>
+    <link>https://www.example-mhlw.go.jp/</link>
+    <description>例示厚生労働省の新着情報(テスト用フィクスチャ)</description>
+    <dc:date>2026-04-03T11:00:00+09:00</dc:date>
+    <items>
+      <rdf:Seq>
+        <rdf:li rdf:resource="https://www.example-mhlw.go.jp/stf/newpage_00001.html"/>
+        <rdf:li rdf:resource="https://www.example-mhlw.go.jp/stf/newpage_00002.html"/>
+        <rdf:li rdf:resource="https://www.example-mhlw.go.jp/stf/newpage_00003.html"/>
+      </rdf:Seq>
+    </items>
+  </channel>
+  <item rdf:about="https://www.example-mhlw.go.jp/stf/newpage_00001.html">
+    <title>障害福祉サービス等報酬改定に関する通知の発出について</title>
+    <link>https://www.example-mhlw.go.jp/stf/newpage_00001.html</link>
+    <description>報酬改定に関する通知を発出しました。</description>
+    <dc:date>2026-04-01T10:00:00+09:00</dc:date>
+  </item>
+  <item rdf:about="https://www.example-mhlw.go.jp/stf/newpage_00002.html">
+    <title>人材開発支援助成金&amp;キャリアアップ助成金の令和8年度改正</title>
+    <description>link 要素を持たず rdf:about だけを持つ項目。</description>
+    <dc:date>2026-04-02T09:30:00+09:00</dc:date>
+  </item>
+  <item rdf:about="https://www.example-mhlw.go.jp/stf/newpage_00003.html">
+    <title>介護保険最新情報 Vol.1234 の送付について</title>
+    <link>/stf/newpage_00003.html</link>
+    <description>相対パスの link を持つ項目。</description>
+  </item>
+</rdf:RDF>
