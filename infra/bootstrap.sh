@@ -204,7 +204,7 @@ say "5/5 Secret Manager のシークレットを用意します(値はまだ入�
 # Cloud Run Jobs はジョブ作成時にバージョンの存在を検証するため、
 # 「箱 → 値 → ジョブ」の順序が必要で、その順序は Terraform 内では表現できない。
 # ---------------------------------------------------------------------------
-for secret in line-token-ai-reskill line-token-welfare anthropic-api-key slack-webhook-url; do
+for secret in line-token-ai-reskill line-token-welfare anthropic-api-key notify-webhook-url; do
   if gcloud secrets describe "${secret}" --project "${PROJECT_ID}" >/dev/null 2>&1; then
     echo "  既にあります: ${secret}"
   else

@@ -19,7 +19,7 @@
 | データストア | Firestore(Native, 既定 DB) | 削除保護 ON |
 | TTL | `items` / `digests` / `deliveries` / `runs` の `expiresAt` | FR-16 の 90 日保持を Firestore 側で自動削除 |
 | 複合インデックス | `items(classifiedAt, detectedAt)` / `runs(date, job, startedAt desc)` | 未分類抽出と実行履歴クエリ用 |
-| シークレット | `line-token-ai-reskill` / `line-token-welfare` / `anthropic-api-key` / `slack-webhook-url` | **箱だけ**作る。値は手順 3 で投入 |
+| シークレット | `line-token-ai-reskill` / `line-token-welfare` / `anthropic-api-key` / `notify-webhook-url` | **Terraform では作らない**(`infra/bootstrap.sh` が作る)。IAM 付与のみ行う |
 | サービスアカウント | `seido-watch-job`(実行用)/ `seido-watch-scheduler`(起動用) | 最小権限 |
 | ジョブ | Cloud Run Jobs `seido-watch-collect` / `-summarize` / `-deliver` | 同一イメージ、`args` でサブコマンド切替 |
 | スケジュール | Cloud Scheduler ×3(`Asia/Tokyo`) | collect `0 6,12,18,23 * * *` / summarize `0 7 * * *` / deliver `30 7 * * *` |
@@ -139,9 +139,9 @@ printf '%s' '<就労支援、放課後デイ情報局のトークン>' | \
 printf '%s' '<sk-ant-...>' | \
   gcloud secrets versions add anthropic-api-key --project="$PROJECT_ID" --data-file=-
 
-# Slack Incoming Webhook URL … M3-02
+# 運用通知の Webhook URL(Slack / Discord どちらでも可) … M3-02
 printf '%s' 'https://hooks.slack.com/services/...' | \
-  gcloud secrets versions add slack-webhook-url --project="$PROJECT_ID" --data-file=-
+  gcloud secrets versions add notify-webhook-url --project="$PROJECT_ID" --data-file=-
 ```
 
 ファイルから入れる場合は、投入後に必ず消してください。
@@ -154,7 +154,7 @@ shred -u ./key.txt   # または rm -P / rm
 投入できたかの確認(値は表示しない):
 
 ```bash
-for s in line-token-ai-reskill line-token-welfare anthropic-api-key slack-webhook-url; do
+for s in line-token-ai-reskill line-token-welfare anthropic-api-key notify-webhook-url; do
   printf '%s: ' "$s"
   gcloud secrets versions list "$s" --project="$PROJECT_ID" --filter='state=ENABLED' --format='value(name)' | head -1
 done
@@ -163,7 +163,7 @@ done
 4 つすべてに **ENABLED なバージョンが 1 つ以上**必要です。Cloud Run はジョブ作成時に参照先バージョンの存在を
 検証するため、1 つでも欠けると手順 4 のジョブ作成が失敗します。
 Slack 通知を当面使わない場合は、ダミー値を入れるのではなく `main.tf` の各ジョブの `secret_env` から
-`SLACK_WEBHOOK_URL` を外してください(未設定なら通知はログ出力のみになります)。
+`NOTIFY_WEBHOOK_URL` を外してください(未設定なら通知はログ出力のみになります)。
 
 ### 4. 全体を適用する
 

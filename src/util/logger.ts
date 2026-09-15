@@ -20,7 +20,11 @@ const REDACTED = '[REDACTED]';
 
 /** 値そのものが秘密らしいと判定するパターン。 */
 const BEARER_MARKER = 'Bearer ';
-const SLACK_WEBHOOK_MARKER = 'hooks.slack.com';
+/**
+ * Webhook の URL は、それ自体が「知っていれば誰でも投稿できる」資格情報。
+ * 例外メッセージに URL がそのまま入って流れてくる経路があるため、値の形でも伏せる。
+ */
+const WEBHOOK_MARKERS = ['hooks.slack.com', 'discord.com/api/webhooks', 'discordapp.com/api/webhooks'];
 
 /** 想定外に深い構造でスタックを食い潰さないための上限。 */
 const MAX_DEPTH = 8;
@@ -31,8 +35,9 @@ const LEVEL_ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, e
 
 /** 値の形から秘密情報を判定する。 */
 function looksSecret(value: string): boolean {
-  // 'Bearer xxx' は Authorization ヘッダそのもの。Slack Webhook は URL 自体が資格情報。
-  return value.includes(BEARER_MARKER) || value.includes(SLACK_WEBHOOK_MARKER);
+  // 'Bearer xxx' は Authorization ヘッダそのもの。Webhook は URL 自体が資格情報。
+  if (value.includes(BEARER_MARKER)) return true;
+  return WEBHOOK_MARKERS.some((marker) => value.includes(marker));
 }
 
 function sanitizeEntry(key: string, value: unknown, seen: WeakSet<object>, depth: number): unknown {

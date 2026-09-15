@@ -23,7 +23,7 @@ AI リスキリング制度と、就労支援事業所・放課後等デイサ�
 | [docs/03_詳細設計書.md](docs/03_詳細設計書.md) | アーキテクチャ・データモデル・AI 設計・品質ゲート |
 | [docs/04_運用手順書.md](docs/04_運用手順書.md) | 日常運用・障害対応・デプロイ・初回セットアップ |
 | [docs/05_品質監査チェックリスト.md](docs/05_品質監査チェックリスト.md) | 週次 10 分の抜き取り監査手順 |
-| [docs/06_認証情報の取得手順.md](docs/06_認証情報の取得手順.md) | LINE トークン・Anthropic キー・Slack Webhook の取り方 |
+| [docs/06_認証情報の取得手順.md](docs/06_認証情報の取得手順.md) | LINE トークン・Anthropic キー・通知 Webhook の取り方 |
 
 ---
 
@@ -46,7 +46,7 @@ AI が出典 URL を捏造しないよう、2 段で止めています。
 1. AI には収集済みの本文と URL だけを渡し、外部検索をさせません。プロンプトで
    「入力に含まれない URL を出力してはならない」と制約します。
 2. 生成後、プログラムが 8 項目の品質ゲートで検証します。入力に無い URL、到達しない URL、
-   助言表現を含む要約は配信から除外し、除外理由を記録して Slack に通知します。
+   助言表現を含む要約は配信から除外し、除外理由を記録して通知します(Slack / Discord)。
 
 元記事があったのに品質ゲートで全滅した場合は、「新着なし」と偽らず**障害として扱います**。
 
@@ -180,7 +180,7 @@ src/
   store/           Firestore と インメモリ(テスト用)
   ai/              分類・要約のプロンプトと構造化出力
   line/            メッセージ整形とブロードキャスト送信
-  notify/          Slack 通知
+  notify/          運用通知(Slack / Discord)
   pipeline/        collect / classify / summarize / quality-gate / deliver
   cli.ts           エントリポイント
 infra/terraform/   Cloud Run Jobs / Scheduler / Firestore / Secret Manager / 監視

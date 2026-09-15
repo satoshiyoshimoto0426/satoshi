@@ -61,12 +61,12 @@ add_secret line-token-welfare \
   "LINE チャネルアクセストークン(就労支援、放課後デイ情報局)" required
 add_secret anthropic-api-key \
   "Anthropic API キー" required
-# Slack も必須にしている。Cloud Run Jobs はジョブ作成時に参照先バージョンの存在を
+# 通知先も必須にしている。Cloud Run Jobs はジョブ作成時に参照先バージョンの存在を
 # 検証するため、1 つでも値が無いとジョブの作成が失敗する。
-# Slack を使わない運用にするなら、値を入れるのではなく
-# infra/terraform/main.tf の各ジョブの secret_env から SLACK_WEBHOOK_URL を外すこと。
-add_secret slack-webhook-url \
-  "Slack Incoming Webhook URL(運用通知先。使わない場合は §6.1 の注記を参照)" required
+# 通知を使わない運用にするなら、値を入れるのではなく
+# infra/terraform/main.tf の各ジョブの secret_env から NOTIFY_WEBHOOK_URL を外すこと。
+add_secret notify-webhook-url \
+  "運用通知の Webhook URL(Slack または Discord。どちらでも可)" required
 
 cat <<'EOF'
 

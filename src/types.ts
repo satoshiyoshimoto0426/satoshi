@@ -113,8 +113,17 @@ export interface RuntimeConfig {
   maxContentChars: number;
   /** 監査データの保持日数(FR-16)。 */
   retentionDays: number;
-  slackWebhookUrl: string | null;
-  /** true なら LINE 送信と Slack 通知を行わず内容をログ出力する。 */
+  /**
+   * 運用通知の送信先 Webhook URL。Slack でも Discord でも使える。
+   * null なら通知は送らずログ出力のみ。
+   */
+  notifyWebhookUrl: string | null;
+  /**
+   * 通知先の種別。null なら URL から自動判別する。
+   * 自動判別で困る場合(独自の中継サーバ経由など)にだけ明示する。
+   */
+  notifyWebhookKind: 'slack' | 'discord' | null;
+  /** true なら LINE 送信と運用通知を行わず内容をログ出力する。 */
   dryRun: boolean;
 }
 

@@ -34,12 +34,13 @@ locals {
   ]
 
   # Secret Manager のシークレット ID。値(バージョン)は Terraform では作らない。
+  # 通知先は Slack でも Discord でも同じ URL 欄を使うため、名前は notify- にしている。
   # tfstate に秘密情報を残さないため(NFR-03 / 詳細設計書 §11)。
   secret_ids = {
     line_token_ai_reskill = "line-token-ai-reskill"
     line_token_welfare    = "line-token-welfare"
     anthropic_api_key     = "anthropic-api-key"
-    slack_webhook_url     = "slack-webhook-url"
+    notify_webhook_url    = "notify-webhook-url"
   }
 
   # expiresAt に TTL を設定するコレクション(詳細設計書 §5 / FR-16: 90 日保持)。
@@ -76,8 +77,8 @@ locals {
       memory      = "2Gi" # jsdom/Readability と PDF 抽出があるため大きめに取る
       schedule    = "0 6,12,18,23 * * *"
       secret_env = tomap({
-        ANTHROPIC_API_KEY = local.secret_ids.anthropic_api_key
-        SLACK_WEBHOOK_URL = local.secret_ids.slack_webhook_url
+        ANTHROPIC_API_KEY  = local.secret_ids.anthropic_api_key
+        NOTIFY_WEBHOOK_URL = local.secret_ids.notify_webhook_url
       })
     }
     summarize = {
@@ -89,8 +90,8 @@ locals {
       memory      = "1Gi"
       schedule    = "0 7 * * *"
       secret_env = tomap({
-        ANTHROPIC_API_KEY = local.secret_ids.anthropic_api_key
-        SLACK_WEBHOOK_URL = local.secret_ids.slack_webhook_url
+        ANTHROPIC_API_KEY  = local.secret_ids.anthropic_api_key
+        NOTIFY_WEBHOOK_URL = local.secret_ids.notify_webhook_url
       })
     }
     deliver = {
@@ -105,7 +106,7 @@ locals {
       secret_env = tomap({
         LINE_TOKEN_AI_RESKILL = local.secret_ids.line_token_ai_reskill
         LINE_TOKEN_WELFARE    = local.secret_ids.line_token_welfare
-        SLACK_WEBHOOK_URL     = local.secret_ids.slack_webhook_url
+        NOTIFY_WEBHOOK_URL    = local.secret_ids.notify_webhook_url
       })
     }
   }

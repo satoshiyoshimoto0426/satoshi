@@ -651,7 +651,8 @@ export function makeRuntime(overrides: Partial<RuntimeConfig> = {}): RuntimeConf
     recheckPerSource: 5,
     maxContentChars: 6000,
     retentionDays: 90,
-    slackWebhookUrl: null,
+    notifyWebhookUrl: null,
+    notifyWebhookKind: null,
     dryRun: false,
     ...overrides,
   };

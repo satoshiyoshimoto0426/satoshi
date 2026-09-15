@@ -6,7 +6,7 @@
  * - 値は Cloud Run Jobs の Secret 参照や Scheduler のジョブ定義から注入される。
  *   誤った値のまま黙って既定値に落ちると「なぜか 2 秒待っていない」「なぜか本番に送信した」
  *   といった事故になるため、解釈できない値は必ず ConfigError で落とす。
- * - 秘密情報(SLACK_WEBHOOK_URL など)は検証エラーでも値を出力しない(NFR-03)。
+ * - 秘密情報(NOTIFY_WEBHOOK_URL など)は検証エラーでも値を出力しない(NFR-03)。
  */
 import { ConfigError } from '../types.js';
 import type { RuntimeConfig } from '../types.js';
@@ -68,17 +68,34 @@ function readStoreKind(env: NodeJS.ProcessEnv): RuntimeConfig['storeKind'] {
 }
 
 /**
- * Slack Webhook URL。値そのものが秘密なので、エラーメッセージにも値を含めない(NFR-03)。
+ * 運用通知の Webhook URL(Slack / Discord)。
+ * 値そのものが秘密なので、エラーメッセージにも値を含めない(NFR-03)。
+ *
+ * 旧名 SLACK_WEBHOOK_URL も読む。Slack 前提だった頃の設定を残したまま
+ * 移行できるようにするため(新しい NOTIFY_WEBHOOK_URL を優先)。
  */
-function readSlackWebhookUrl(env: NodeJS.ProcessEnv): string | null {
-  const raw = readRaw(env, 'SLACK_WEBHOOK_URL');
+function readNotifyWebhookUrl(env: NodeJS.ProcessEnv): string | null {
+  const name = readRaw(env, 'NOTIFY_WEBHOOK_URL') !== undefined ? 'NOTIFY_WEBHOOK_URL' : 'SLACK_WEBHOOK_URL';
+  const raw = readRaw(env, name);
   if (raw === undefined) return null;
   if (!raw.startsWith('https://')) {
     throw new ConfigError(
-      '環境変数 SLACK_WEBHOOK_URL は https:// で始まる URL を指定してください(値は秘匿のため表示しません)',
+      `環境変数 ${name} は https:// で始まる URL を指定してください(値は秘匿のため表示しません)`,
     );
   }
   return raw;
+}
+
+/**
+ * 通知先の種別。未指定なら null を返し、URL からの自動判別に任せる。
+ */
+function readNotifyWebhookKind(env: NodeJS.ProcessEnv): 'slack' | 'discord' | null {
+  const raw = readRaw(env, 'NOTIFY_WEBHOOK_KIND');
+  if (raw === undefined || raw === '' || raw === 'auto') return null;
+  if (raw === 'slack' || raw === 'discord') return raw;
+  throw new ConfigError(
+    `環境変数 NOTIFY_WEBHOOK_KIND は 'slack' / 'discord' / 'auto' のいずれかを指定してください: ${raw}`,
+  );
 }
 
 /**
@@ -102,7 +119,8 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     maxContentChars: readInt(env, 'MAX_CONTENT_CHARS', 6000, 1),
     // 監査データの保持日数(FR-16)。
     retentionDays: readInt(env, 'RETENTION_DAYS', 90, 1),
-    slackWebhookUrl: readSlackWebhookUrl(env),
+    notifyWebhookUrl: readNotifyWebhookUrl(env),
+    notifyWebhookKind: readNotifyWebhookKind(env),
     dryRun: readBool(env, 'DRY_RUN', false),
   };
   return runtime;

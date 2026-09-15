@@ -17,7 +17,7 @@ import { createAiClient, createStubAiClient } from './ai/client.js';
 import { DEFAULT_CONFIG_DIR, loadConfig, validateCrossReferences } from './config/load.js';
 import { loadRuntimeConfig } from './config/runtime.js';
 import { createLineClient } from './line/client.js';
-import { createSlackNotifier } from './notify/slack.js';
+import { createWebhookNotifier } from './notify/webhook.js';
 import { createStore } from './store/index.js';
 import { ConfigError } from './types.js';
 import type {
@@ -86,7 +86,7 @@ export async function createContext(overrides: ContextOverrides = {}): Promise<A
   // ドライランでは実 API を呼ばない。誤って課金・レート消費しないための保険(NFR-04)。
   const ai = overrides.ai ?? (runtime.dryRun ? createStubAiClient(logger) : createAiClient(runtime, logger));
   const line = overrides.line ?? createLineClient(runtime, logger);
-  const notifier = overrides.notifier ?? createSlackNotifier(runtime, logger);
+  const notifier = overrides.notifier ?? createWebhookNotifier(runtime, logger);
 
   /**
    * LINE チャネルアクセストークンを解決する。

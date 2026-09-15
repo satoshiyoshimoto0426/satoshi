@@ -388,7 +388,8 @@ function testRuntime(): RuntimeConfig {
     recheckPerSource: 5,
     maxContentChars: 6_000,
     retentionDays: 90,
-    slackWebhookUrl: null,
+    notifyWebhookUrl: null,
+    notifyWebhookKind: null,
     dryRun: true,
   };
 }
