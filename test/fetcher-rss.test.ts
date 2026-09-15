@@ -342,3 +342,35 @@ describe('fetchRss: 条件付き GET', () => {
     expect(result.notModified).toBe(false);
   });
 });
+
+describe('fetchRss: RSS を名乗る独自スキーマ(WAM NET 都道府県フィード)', () => {
+  // 実在の配信元。ルートが <RSS_LIST>、項目が大文字の <ITEM>、
+  // リンクが <URL>、日付が <DATE> で、標準の RSS ではない。
+  // 小文字決め打ちで探すと 0 件になるが HTTP は 200 なので、
+  // 「巡回成功・中身は永久に 0 件」という静かな故障になる。
+  const feedUrl = 'https://www.example-wam.go.jp/pref_rss/rss_all_new.xml';
+
+  async function fetchFixture() {
+    const { http } = stubHttp({ text: fixtureText('rss-wam-pref.xml'), finalUrl: feedUrl });
+    return fetchRss(rssSource({ id: 'wam_pref', url: feedUrl }), http, null);
+  }
+
+  it('大文字の ITEM を候補として取り出す', async () => {
+    const result = await fetchFixture();
+    expect(result.candidates).toHaveLength(2);
+  });
+
+  it('<URL> と <TITLE> を読む', async () => {
+    const result = await fetchFixture();
+    expect(result.candidates[0]?.url).toBe('https://www.pref.osaka.lg.jp/jigyoshido/shitei/index.html');
+    expect(result.candidates[0]?.title).toBe('障害福祉サービス事業者の指定申請について（令和８年度）');
+  });
+
+  it('タイムゾーンの無い <DATE> を日本時間として解釈する', async () => {
+    const result = await fetchFixture();
+    // 2026-09-15 12:00 JST = 2026-09-15T03:00:00Z。
+    // 実行環境の時間帯で解釈すると UTC の Cloud Run では 9 時間ずれ、
+    // 日付境界をまたぐと当日のダイジェストから漏れる。
+    expect(result.candidates[0]?.publishedAt).toBe('2026-09-15T03:00:00.000Z');
+  });
+});
