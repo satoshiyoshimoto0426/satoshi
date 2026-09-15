@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { runCollect } from '../src/pipeline/collect.js';
+import { runCollect, shouldWarnAgain } from '../src/pipeline/collect.js';
 import { HttpError, RobotsDisallowedError } from '../src/types.js';
 import type { Item, SourceState } from '../src/types.js';
 import { createFakeHttp, makeContext, makeListHtml, makeSource, mutableClock } from './helpers/fakes.js';
@@ -550,5 +550,48 @@ describe('runCollect: 候補 0 件(セレクタ失効)の検知', () => {
 
     const state = await ctx.store.getSourceState('mhlw_news');
     expect(state?.consecutiveEmpty).toBe(0);
+  });
+});
+
+describe('shouldWarnAgain: 連続失敗の通知抑制', () => {
+  // 壊れたソースは直すまで毎回失敗する。巡回は 1 日 4 回なので、毎回通知すると
+  // 42 本壊れている状態で 1 日 168 通になり、本当に見るべき 1 通が埋もれる。
+  // かといって初回だけにすると悪化に気づけないので、回数が倍になったときだけ出す。
+  const THRESHOLD = 3;
+
+  it('しきい値に達したら 1 通目を出す', () => {
+    expect(shouldWarnAgain(3, THRESHOLD, 0)).toBe(true);
+  });
+
+  it('しきい値未満では出さない', () => {
+    expect(shouldWarnAgain(1, THRESHOLD, 0)).toBe(false);
+    expect(shouldWarnAgain(2, THRESHOLD, 0)).toBe(false);
+  });
+
+  it('同じ故障の繰り返しでは出さない', () => {
+    expect(shouldWarnAgain(4, THRESHOLD, 3)).toBe(false);
+    expect(shouldWarnAgain(5, THRESHOLD, 3)).toBe(false);
+  });
+
+  it('回数が倍になったら悪化として再度出す', () => {
+    expect(shouldWarnAgain(6, THRESHOLD, 3)).toBe(true);
+    expect(shouldWarnAgain(12, THRESHOLD, 6)).toBe(true);
+    expect(shouldWarnAgain(24, THRESHOLD, 12)).toBe(true);
+  });
+
+  it('1 か月壊れ続けても通知は数通に収まる', () => {
+    // 1 日 4 回 × 30 日 = 120 回の失敗。
+    let warned = 0;
+    let warnedAt = 0;
+    for (let n = 1; n <= 120; n += 1) {
+      if (shouldWarnAgain(n, THRESHOLD, warnedAt)) {
+        warned += 1;
+        warnedAt = n;
+      }
+    }
+    // 毎回通知なら 118 通。抑制が効いていることを数で確かめる。
+    expect(warned).toBeLessThanOrEqual(7);
+    // 完全に黙ってしまっては「まだ直っていない」ことが伝わらない。
+    expect(warned).toBeGreaterThanOrEqual(5);
   });
 });

@@ -57,6 +57,23 @@ const FAILURE_WARN_THRESHOLD = 3;
 /** source_state.lastError / 通知に載せるメッセージの長さ上限(ログ肥大の防止)。 */
 const ERROR_TEXT_MAX = 300;
 
+/**
+ * 同じ故障で通知を出し続けないための判定。
+ *
+ * 壊れたソースは直すまで毎回失敗する。巡回は 1 日 4 回なので、素直に毎回
+ * 通知すると 1 ソースあたり 1 日 4 通、42 本壊れていれば 1 日 168 通になる。
+ * そうなると運用者は通知を見なくなり、本当に見るべき 1 通が埋もれる。
+ *
+ * かといって初回だけにすると、悪化しても気づけない。そこで回数が倍になった
+ * ときだけ再通知する(3 → 6 → 12 → 24 …)。1 か月壊れていても 6 通程度に収まり、
+ * 「まだ直っていない」ことは定期的に目に入る。
+ */
+export function shouldWarnAgain(count: number, threshold: number, warnedAt: number): boolean {
+  if (count < threshold) return false;
+  if (warnedAt === 0) return true;
+  return count >= warnedAt * 2;
+}
+
 /** 正規化済みの候補リンク 1 件。 */
 interface NormalizedCandidate {
   id: string;
@@ -233,7 +250,7 @@ export async function runCollect(ctx: AppContext, opts?: CollectOptions): Promis
     const empty = !result.notModified && result.candidates.length === 0;
     const consecutiveEmpty = empty ? (previous?.consecutiveEmpty ?? 0) + 1 : 0;
     const warnedAtEmpty = previous?.warnedAtEmptyCount ?? 0;
-    const shouldWarnEmpty = consecutiveEmpty >= EMPTY_WARN_THRESHOLD && warnedAtEmpty < consecutiveEmpty;
+    const shouldWarnEmpty = shouldWarnAgain(consecutiveEmpty, EMPTY_WARN_THRESHOLD, warnedAtEmpty);
 
     await ctx.store.putSourceState({
       sourceId: source.id,
@@ -276,8 +293,8 @@ export async function runCollect(ctx: AppContext, opts?: CollectOptions): Promis
     const message = errorMessage(e).slice(0, ERROR_TEXT_MAX);
     const failures = (previous?.consecutiveFailures ?? 0) + 1;
     const warnedAt = previous?.warnedAtFailureCount ?? 0;
-    // 同じ失敗回数で二重に通知しないための条件(warnedAtFailureCount に現在の回数を記録する)。
-    const shouldWarn = failures >= FAILURE_WARN_THRESHOLD && warnedAt < failures;
+    // 直るまで毎回通知しない(warnedAtFailureCount に通知時の回数を記録する)。
+    const shouldWarn = shouldWarnAgain(failures, FAILURE_WARN_THRESHOLD, warnedAt);
 
     counts.sourcesFailed += 1;
     errors.push(`ソース ${source.id}(${source.name})の巡回に失敗しました: ${message}`);
