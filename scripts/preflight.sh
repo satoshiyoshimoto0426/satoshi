@@ -61,6 +61,20 @@ else
   C_G='' C_R='' C_Y='' C_B='' C_0=''
 fi
 
+# 値に混ざっている空白文字の種類を、値そのものを見せずに言葉で説明する。
+# 「空白が混ざっています」だけでは、どこを直せばよいか分からないため。
+describe_whitespace() {
+  printf '%s' "$1" | od -An -tu1 -v | tr ' ' '\n' | grep -E '^(9|10|13|32)$' | sort -u |
+    while read -r code; do
+      case "${code}" in
+        9) printf 'タブ ' ;;
+        10) printf '改行 ' ;;
+        13) printf '復帰(CR。Windows やメモ帳を経由するとき付く) ' ;;
+        32) printf '空白 ' ;;
+      esac
+    done
+}
+
 ng=0
 ok() { printf '  %s✓%s %s\n' "${C_G}" "${C_0}" "$*"; }
 bad() {
@@ -169,6 +183,7 @@ for secret in "${SECRETS[@]}"; do
       "このまま配信すると認証に失敗します。scripts/set-secrets.sh で入れ直してください"
   elif [[ "${value}" =~ [[:space:]] ]]; then
     bad "${secret}: 値に空白や改行が混ざっています" \
+      "混ざっている文字: $(describe_whitespace "${value}")" \
       "このまま配信すると認証に失敗します。scripts/set-secrets.sh で入れ直してください"
   else
     ok "${secret}: 値あり"

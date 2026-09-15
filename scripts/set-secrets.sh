@@ -24,6 +24,20 @@ has_version() {
     grep -q .
 }
 
+# 値に混ざっている空白文字の種類を、値そのものを見せずに言葉で説明する。
+# 「空白が混ざっています」だけでは、どこを直せばよいか分からないため。
+describe_whitespace() {
+  printf '%s' "$1" | od -An -tu1 -v | tr ' ' '\n' | grep -E '^(9|10|13|32)$' | sort -u |
+    while read -r code; do
+      case "${code}" in
+        9) printf 'タブ ' ;;
+        10) printf '改行 ' ;;
+        13) printf '復帰(CR。Windows やメモ帳を経由するとき付く) ' ;;
+        32) printf '空白 ' ;;
+      esac
+    done
+}
+
 # LINE のチャネルアクセストークンが本当に使えるかを確認する。
 # 送信は行わない読み取り専用の API を叩くだけ(ボットの基本情報を取得する)。
 # 貼り付け間違いや期限切れを、デプロイの当日ではなくこの場で見つけるため。
@@ -76,6 +90,20 @@ add_secret() {
   # 「見た目は正しいのに認証が通らない」という原因の分かりにくい失敗になる。
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
+
+  # 前後を削ってもなお空白が残るのは、貼り付けが途中で折り返したか、
+  # Windows 由来の復帰(CR)が紛れ込んだとき。4 つの値はいずれも
+  # 空白を含まない形式なので、ここで弾く。そのまま保存すると
+  # 「値は入っているのに認証だけ通らない」という最も原因の分かりにくい失敗になる。
+  if [[ -n "${value}" && "${value}" =~ [[:space:]] ]]; then
+    echo "  × 値の途中に空白や改行が含まれています。保存しませんでした。" >&2
+    echo "    混ざっている文字: $(describe_whitespace "${value}")" >&2
+    echo "" >&2
+    echo "    コピー元で改行が入っていないか確認してください。" >&2
+    echo "    メモ帳や Word を経由すると改行が入ることがあります。" >&2
+    echo "    LINE や Anthropic の画面のコピーボタンから直接貼るのが確実です。" >&2
+    return 1
+  fi
 
   if [[ -z "${value}" ]]; then
     if [[ "${required}" == "required" ]] && ! has_version "${name}"; then
