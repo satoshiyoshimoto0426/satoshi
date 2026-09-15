@@ -193,7 +193,7 @@ done
 restore_xtrace
 
 # ---------------------------------------------------------------------------
-say "3/4 LINE のトークンが実際に使えるか(送信はしません)"
+say "3/4 LINE のトークンと Anthropic API キーが実際に使えるか(送信はしません)"
 # ---------------------------------------------------------------------------
 hide_values
 for pair in "line-token-ai-reskill:AIリスキリング制度情報局" "line-token-welfare:就労支援、放課後デイ情報局"; do
@@ -235,6 +235,34 @@ for pair in "line-token-ai-reskill:AIリスキリング制度情報局" "line-to
   esac
 done
 unset token
+
+# Anthropic API キーも同じく実際に叩いて確かめる。送信も課金も発生しない
+# モデル一覧の取得(GET /v1/models)を使う。2026-09-16 の初回本番で分類が全滅した際、
+# 「キーが間違っている」可能性を事前に切り分ける手段が無かった。
+api_key="$(gcloud secrets versions access latest --secret=anthropic-api-key --project="${PROJECT_ID}" 2>/dev/null)"
+if [[ -z "${api_key}" ]]; then
+  bad "Anthropic API キー: 読み出せません" "scripts/set-secrets.sh を実行してください"
+else
+  body="$(printf 'header = "x-api-key: %s"\nheader = "anthropic-version: 2023-06-01"\n' "${api_key}" |
+    curl -sS -m 15 -w '\n%{http_code}' --config - 'https://api.anthropic.com/v1/models?limit=1' 2>/dev/null)" || {
+    warn "Anthropic API キー: 確認できませんでした(ネットワークに出られない環境の可能性)"
+    body=""
+  }
+  if [[ -n "${body}" ]]; then
+    status="$(printf '%s' "${body}" | tail -n1)"
+    case "${status}" in
+      200) ok "Anthropic API キー: 有効" ;;
+      401 | 403)
+        bad "Anthropic API キー: 拒否されました(HTTP ${status})" \
+          "キーが違うか、途中で切れているか、無効化されています。" \
+          "scripts/set-secrets.sh で入れ直してください"
+        ;;
+      429 | 5*) warn "Anthropic API キー: 一時的に確認できません(HTTP ${status})。時間をおいて再実行してください" ;;
+      *) warn "Anthropic API キー: 応答が想定外でした(HTTP ${status})" ;;
+    esac
+  fi
+fi
+unset api_key
 restore_xtrace
 
 # ---------------------------------------------------------------------------
