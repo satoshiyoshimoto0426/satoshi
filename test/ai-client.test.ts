@@ -683,6 +683,29 @@ describe('一時的な失敗のリトライ', () => {
     expect(fake.bodies).toHaveLength(1);
   });
 
+  it('残高不足(400)は日本語で購入先を示し、retryable=false になる', async () => {
+    // 実運用で起きた形(2026-09-17)。英語の生エラーだけでは運用者が「壊れたのか」と
+    // 受け取ってしまうため、取るべき行動(購入 → summarize --force)を添える。
+    const { client, fake } = setup(() => {
+      throw Object.assign(
+        new Error(
+          '400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}}',
+        ),
+        { status: 400 },
+      );
+    });
+
+    const error = await catchAiError(() => client.classify(makeClassifyItems(1), CHANNELS));
+
+    expect(error.retryable).toBe(false);
+    expect(error.message).toContain('残高が不足');
+    expect(error.message).toContain('console.anthropic.com/settings/billing');
+    expect(error.message).toContain('summarize --force');
+    // 元のエラーも追えるようにしておく(原因の裏取り用)。
+    expect(error.message).toContain('credit balance');
+    expect(fake.bodies).toHaveLength(1);
+  });
+
   it('再試行のたびに警告ログを出す(運用者が頻度に気付けるように)', async () => {
     let calls = 0;
     const { client, logger } = setup((index, body) => {

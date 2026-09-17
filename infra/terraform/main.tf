@@ -72,6 +72,7 @@ locals {
       display     = "収集"
       description = "情報源を巡回して items を更新し、未分類アイテムを分類する(詳細設計書 §6.1)"
       args        = ["collect"]
+      max_retries = 1       # クラッシュ・タイムアウト時に 1 回だけ。ソース単位の失敗はアプリ内で処理済み
       timeout     = "1200s" # 20 分
       cpu         = "1"
       memory      = "2Gi" # jsdom/Readability と PDF 抽出があるため大きめに取る
@@ -85,6 +86,7 @@ locals {
       display     = "要約"
       description = "チャネルごとに当日のダイジェストを生成する(詳細設計書 §6.2)"
       args        = ["summarize"]
+      max_retries = 0      # 失敗はほぼ決定的(残高不足・品質ゲート全滅)。再実行は AI 費用と通知を 4 倍にするだけ
       timeout     = "600s" # 10 分
       cpu         = "1"
       memory      = "1Gi"
@@ -98,6 +100,7 @@ locals {
       display     = "配信"
       description = "生成済みダイジェストを LINE 公式アカウントへブロードキャストする(詳細設計書 §6.3)"
       args        = ["deliver"]
+      max_retries = 0      # 冪等。ダイジェスト不在は再実行で直らず、通知が増えるだけ
       timeout     = "300s" # 5 分
       cpu         = "1"
       memory      = "512Mi"
@@ -334,7 +337,12 @@ resource "google_cloud_run_v2_job" "jobs" {
     template {
       service_account = google_service_account.job.email
       timeout         = each.value.timeout
-      max_retries     = 3 # NFR-01: 失敗時は最大 3 回リトライ
+      # タスク単位の再実行はジョブごとに決める(local.jobs)。
+      # 一律 3 回にしていたところ、残高不足のような決定的な失敗で同じ通知が 4 回ずつ届き、
+      # 要約では AI 呼び出しの費用も 4 倍になった(2026-09-17)。
+      # 一過性の失敗(429 / 5xx / 接続断)は HTTP クライアント側の API 呼び出し単位の
+      # 再試行が担う(NFR-01)。ジョブ全体のやり直しは粒度が粗すぎる。
+      max_retries = each.value.max_retries
 
       containers {
         image = var.image

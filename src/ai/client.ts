@@ -189,6 +189,15 @@ function toAiError(e: unknown): AiError {
     if (status >= 500) {
       return new AiError(`AI API がサーバエラーを返しました(HTTP ${status}): ${detail}`, true);
     }
+    // 残高不足は 400 で返る。英語の生エラーだけでは運用者が何をすべきか読み取れず、
+    // 実際に「壊れたのか」と問い合わせが来た(2026-09-17)。取るべき行動を日本語で添える。
+    if (/credit balance|billing/i.test(detail)) {
+      return new AiError(
+        'Anthropic API の残高が不足しています。https://console.anthropic.com/settings/billing で' +
+          `クレジットを購入してください。購入後に summarize --force で再実行できます(元のエラー: ${detail})`,
+        false,
+      );
+    }
     // 400 番台(429 を除く)はリクエストそのものが誤っている。再試行しても同じ。
     return new AiError(`AI API がエラーを返しました(HTTP ${status}): ${detail}`, false);
   }
