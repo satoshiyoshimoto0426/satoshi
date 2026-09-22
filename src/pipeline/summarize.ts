@@ -45,6 +45,14 @@ export interface SummarizeOptions {
   channelIds?: string[];
   /** 既存の digest があっても作り直す。 */
   force?: boolean;
+  /**
+   * 持ち越しの起点日(JST, YYYY-MM-DD)。省略時は CARRY_OVER_DAYS。
+   *
+   * この日付の「まとめ」に載るはずだった未配信の記事から拾う(= その日の窓の開始時刻から)。
+   * 残高切れなどで数日分の配信が止まったあと、取りこぼしを 1 通にまとめて届けるための
+   * 手動運用向け。通常運転では使わない(3 日の持ち越しで足りる)。
+   */
+  since?: string;
 }
 
 /** 対象ウィンドウの締め時刻(JST)。詳細設計書 §6.2: [前日 07:00, 当日 07:00)。 */
@@ -373,6 +381,18 @@ export async function runSummarize(ctx: AppContext, opts: SummarizeOptions = {})
 
   const channels = resolveChannels(ctx, opts.channelIds);
   const window = digestWindow(dateJst, WINDOW_CUTOFF_JST);
+
+  // 持ち越しの起点。--since は「その日のまとめに載るはずだった分から」なので、
+  // その日の窓の開始時刻(前日 07:00)を起点にする。対象日以降を指定しても意味が無い。
+  let carryFrom = addDays(window.from, -CARRY_OVER_DAYS);
+  if (opts.since !== undefined) {
+    if (!isValidDateString(opts.since) || opts.since >= dateJst) {
+      throw new ConfigError(
+        `--since は対象日(${dateJst})より前の 'YYYY-MM-DD' 形式の実在する日付で指定してください: ${opts.since}`,
+      );
+    }
+    carryFrom = digestWindow(opts.since, WINDOW_CUTOFF_JST).from;
+  }
   const sourceById = new Map(ctx.config.sources.map((source) => [source.id, source]));
 
   const counts = emptyCounts();
@@ -400,6 +420,7 @@ export async function runSummarize(ctx: AppContext, opts: SummarizeOptions = {})
     channels: channels.map((c) => c.id),
     from: window.from,
     to: window.to,
+    carryFrom,
     force: opts.force === true,
   });
 
@@ -433,6 +454,7 @@ export async function runSummarize(ctx: AppContext, opts: SummarizeOptions = {})
         channel,
         dateJst,
         window,
+        carryFrom,
         sourceById,
         counts,
         force: opts.force === true,
@@ -487,6 +509,8 @@ interface ChannelJob {
   sourceById: Map<string, SourceConfig>;
   counts: RunCounts;
   force: boolean;
+  /** 持ち越しの起点(ISO8601 UTC)。既定は window.from の CARRY_OVER_DAYS 日前。 */
+  carryFrom: string;
   getCoverage: () => Promise<CoverageSummary>;
   onError: (message: string) => void;
 }
@@ -514,8 +538,8 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
   // 新着(detectedAt がウィンドウ内)に加え、既知 URL の内容が更新されたもの
   // (updatedAt がウィンドウ内)も対象にする。detectedAt は初検知時刻のまま据え置かれるため、
   // 更新分は detectedAt のクエリでは拾えず、「更新は検知したが誰にも届かない」状態になる(FR-02)。
-  // 繰り越し用に、ウィンドウ開始より CARRY_OVER_DAYS 日さかのぼった範囲も引く。
-  const carryWindow = { from: addDays(job.window.from, -CARRY_OVER_DAYS), to: job.window.from };
+  // 繰り越し用に、ウィンドウ開始より前(既定は CARRY_OVER_DAYS 日、--since 指定時はその日から)も引く。
+  const carryWindow = { from: job.carryFrom, to: job.window.from };
 
   // 更新の検出はウィンドウより広くさかのぼる(理由は UPDATE_LOOKBACK_DAYS のコメント)。
   const updateWindow = {
@@ -574,7 +598,7 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
   if (carriedOver > 0) {
     log.info('未配信のまま残っていたアイテムを繰り越しました', {
       count: carriedOver,
-      days: CARRY_OVER_DAYS,
+      from: job.carryFrom,
     });
   }
 
