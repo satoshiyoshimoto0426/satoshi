@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { runSummarize } from '../src/pipeline/summarize.js';
-import { AiError } from '../src/types.js';
+import { AiError, ConfigError } from '../src/types.js';
 import type { Digest, Item, Run, RunCounts } from '../src/types.js';
 import { addDays, digestWindow } from '../src/util/time.js';
 import {
@@ -251,6 +251,48 @@ describe('runSummarize: 対象ウィンドウ(詳細設計書 §6.2)', () => {
     await runSummarize(ctx, { date: DEFAULT_DATE_JST });
 
     expect(aiInputIds(ctx)).toEqual([inWindow.id]);
+  });
+
+  // -------------------------------------------------------------------------
+  // --since: 数日分の取りこぼしを 1 通にまとめる(手動運用)
+  //
+  // 残高切れなどで配信が数日止まると、3 日の持ち越しでは初日の分が窓から外れて
+  // 永久に届かない。復旧時に「この日のまとめ以降ぶん」をまとめて拾えるようにする。
+  // -------------------------------------------------------------------------
+
+  it('--since を指定すると、持ち越し期間より古い未配信も拾う', async () => {
+    const inWindow = item(1, { detectedAt: INSIDE });
+    // ウィンドウ開始の 4 日前(既定の 3 日では拾われない)。
+    const tooOld = item(2, { detectedAt: '2026-09-07T10:00:00.000Z', digestedIn: [] });
+
+    const ctx = setup([inWindow, tooOld]);
+    // 9/8 のまとめの窓は 9/7 07:00 JST から。9/7 10:00 JST に検知した記事はここに入る。
+    await runSummarize(ctx, { date: DEFAULT_DATE_JST, since: '2026-09-08' });
+
+    expect(aiInputIds(ctx)).toEqual([inWindow.id, tooOld.id].sort());
+  });
+
+  it('--since でも、このチャネルで配信済みのものは再配信しない', async () => {
+    const inWindow = item(1, { detectedAt: INSIDE });
+    const alreadySent = item(2, {
+      detectedAt: '2026-09-07T10:00:00.000Z',
+      digestedIn: ['welfare_2026-09-08'],
+    });
+
+    const ctx = setup([inWindow, alreadySent]);
+    await runSummarize(ctx, { date: DEFAULT_DATE_JST, since: '2026-09-08' });
+
+    expect(aiInputIds(ctx)).toEqual([inWindow.id]);
+  });
+
+  it('--since が対象日以降、または日付として不正なら設定エラーにする', async () => {
+    const ctx = setup([item(1)]);
+    await expect(
+      runSummarize(ctx, { date: DEFAULT_DATE_JST, since: DEFAULT_DATE_JST }),
+    ).rejects.toBeInstanceOf(ConfigError);
+    await expect(runSummarize(ctx, { date: DEFAULT_DATE_JST, since: '2026-13-01' })).rejects.toBeInstanceOf(
+      ConfigError,
+    );
   });
 
   it('関連度がしきい値未満のもの・未分類のもの・他チャネル向けのものは対象にしない', async () => {

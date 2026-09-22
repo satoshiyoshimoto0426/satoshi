@@ -358,6 +358,7 @@ interface SummarizeCliOptions {
   date?: string;
   channel?: string[];
   force?: boolean;
+  since?: string;
 }
 interface DeliverCliOptions {
   date?: string;
@@ -414,6 +415,10 @@ program
   .option('--date <YYYY-MM-DD>', '対象の JST 日付。省略時は本日')
   .option('--channel <id...>', '対象チャネル id。省略時は全チャネル')
   .option('--force', '生成済みのまとめを作り直す')
+  .option(
+    '--since <YYYY-MM-DD>',
+    'この日のまとめに載るはずだった未配信の記事まで持ち越す(数日分の取りこぼしを 1 通にまとめる手動運用向け)',
+  )
   .action((options: SummarizeCliOptions) =>
     runCommand('summarize', async (logger) => {
       const ctx = await createContext({ logger });
@@ -421,6 +426,7 @@ program
         date: resolveDate(ctx, options.date),
         channelIds: options.channel,
         force: options.force === true,
+        since: options.since,
       });
       reportRun(logger, run, true);
     }),
