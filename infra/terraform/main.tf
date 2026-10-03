@@ -54,8 +54,8 @@ locals {
     FIRESTORE_DATABASE_ID    = google_firestore_database.default.name
     STORE_KIND               = "firestore"
     CONFIG_DIR               = "/app/config"
-    ANTHROPIC_MODEL          = "claude-opus-5"
-    ANTHROPIC_CLASSIFY_MODEL = "claude-opus-5" # 分類だけ別モデルにできる。分類は件数が多く AI 費用の大半を占める
+    ANTHROPIC_MODEL          = "claude-opus-5-5"   # 要約。配信文の質を決めるので上位モデル
+    ANTHROPIC_CLASSIFY_MODEL = "claude-sonnet-5-5" # 分類。件数が多く AI 費用の大半を占めるため安いモデル
     USER_AGENT               = "SeidoWatchBot/1.0 (+mailto:ops@example.com)"
     HOST_DELAY_MS            = "2000" # NFR-07: 同一ホストへは 2 秒以上あける
     HOST_CONCURRENCY         = "4"
