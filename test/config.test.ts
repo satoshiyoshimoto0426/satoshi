@@ -21,6 +21,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { ChannelConfig, SourceConfig } from '../src/types.js';
 import { ConfigError } from '../src/types.js';
 import { DEFAULT_CONFIG_DIR, loadConfig, validateCrossReferences } from '../src/config/load.js';
+import { loadRuntimeConfig } from '../src/config/runtime.js';
 
 /** リポジトリ同梱の本番設定ディレクトリ(読み取り専用)。 */
 const REPO_CONFIG_DIR = fileURLToPath(new URL('../config', import.meta.url));
@@ -873,5 +874,19 @@ describe('本番設定(リポジトリの config/)', () => {
 describe('DEFAULT_CONFIG_DIR', () => {
   it("CONFIG_DIR 環境変数、無ければ 'config'", () => {
     expect(DEFAULT_CONFIG_DIR).toBe(process.env.CONFIG_DIR ?? 'config');
+  });
+});
+
+describe('loadRuntimeConfig のモデル指定', () => {
+  it('ANTHROPIC_CLASSIFY_MODEL が無ければ分類も ANTHROPIC_MODEL を使う', () => {
+    const runtime = loadRuntimeConfig({ ANTHROPIC_MODEL: 'model-a' });
+    expect(runtime.anthropicModel).toBe('model-a');
+    expect(runtime.anthropicClassifyModel).toBe('model-a');
+  });
+
+  it('ANTHROPIC_CLASSIFY_MODEL があれば分類だけそのモデルにする', () => {
+    const runtime = loadRuntimeConfig({ ANTHROPIC_MODEL: 'model-a', ANTHROPIC_CLASSIFY_MODEL: 'model-b' });
+    expect(runtime.anthropicModel).toBe('model-a');
+    expect(runtime.anthropicClassifyModel).toBe('model-b');
   });
 });

@@ -12,9 +12,16 @@
 import { describe, expect, it } from 'vitest';
 
 import { runCollect, shouldWarnAgain } from '../src/pipeline/collect.js';
-import { HttpError, RobotsDisallowedError } from '../src/types.js';
+import { ConfigError, HttpError, RobotsDisallowedError } from '../src/types.js';
 import type { Item, SourceState } from '../src/types.js';
-import { createFakeHttp, makeContext, makeListHtml, makeSource, mutableClock } from './helpers/fakes.js';
+import {
+  createFakeHttp,
+  makeContext,
+  makeItem,
+  makeListHtml,
+  makeSource,
+  mutableClock,
+} from './helpers/fakes.js';
 import type { FakeHttpClient, MakeContextOptions, TestContext } from './helpers/fakes.js';
 
 const LIST_URL = 'https://www.mhlw.go.jp/stf/news.html';
@@ -550,6 +557,44 @@ describe('runCollect: 候補 0 件(セレクタ失効)の検知', () => {
 
     const state = await ctx.store.getSourceState('mhlw_news');
     expect(state?.consecutiveEmpty).toBe(0);
+  });
+});
+
+describe('runCollect: 分類する範囲(--classify-since)', () => {
+  /** 残高切れなどで分類されないまま残った、10 日以上前のアイテム。 */
+  const stale = makeItem({
+    canonicalUrl: 'https://www.mhlw.go.jp/stf/stale.html',
+    detectedAt: '2026-09-01T00:00:00.000Z',
+    classification: null,
+    classifiedAt: null,
+  });
+
+  it('既定では持ち越し期間より古い未分類アイテムを分類しない(配信されず費用だけかかるため)', async () => {
+    const { ctx } = setup();
+    ctx.store.seed({ items: [stale] });
+
+    await runCollect(ctx);
+
+    expect((await ctx.store.getItem(stale.id))?.classifiedAt).toBeNull();
+    // 今回の巡回で取り込んだ新着は分類される。
+    expect(itemOf(ctx, ARTICLE_A).classifiedAt).not.toBeNull();
+  });
+
+  it('classifySince を指定すると、その日のまとめの窓(前日 07:00 JST)以降の分まで分類する', async () => {
+    const { ctx } = setup();
+    ctx.store.seed({ items: [stale] });
+
+    // 2026-09-01 の窓は 2026-08-31 07:00 JST(= 2026-08-30T22:00Z)から。
+    await runCollect(ctx, { classifySince: '2026-09-01' });
+
+    expect((await ctx.store.getItem(stale.id))?.classifiedAt).not.toBeNull();
+  });
+
+  it('classifySince の書式が不正なら巡回を始める前に ConfigError', async () => {
+    const { ctx, http } = setup();
+
+    await expect(runCollect(ctx, { classifySince: '2026/09/01' })).rejects.toBeInstanceOf(ConfigError);
+    expect(http.getCalls).toHaveLength(0);
   });
 });
 

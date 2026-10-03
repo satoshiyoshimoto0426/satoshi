@@ -643,6 +643,7 @@ export function makeRuntime(overrides: Partial<RuntimeConfig> = {}): RuntimeConf
     firestoreDatabaseId: '(default)',
     storeKind: 'memory',
     anthropicModel: 'claude-opus-5',
+    anthropicClassifyModel: 'claude-opus-5',
     userAgent: 'SeidoWatchBot/1.0 (+mailto:ops@example.com)',
     hostDelayMs: 0,
     hostConcurrency: 4,

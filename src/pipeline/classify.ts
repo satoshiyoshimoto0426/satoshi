@@ -15,10 +15,17 @@
  * 4. **応答に含まれない id はエラーにしない**。AI が一部のアイテムを落として返しても、
  *    そのアイテムは未分類のまま次回に回る。件数だけはログに残して、
  *    「毎回同じ件数が取りこぼされている」ことに運用者が気付けるようにする。
+ * 5. **配信され得ない古いアイテムは分類しない**。分類は API 費用の大半を占める。
+ *    残高切れで数日止まったあと、未分類が数百件たまり、配信の窓から外れた古い記事まで
+ *    分類して 1 日で 8 ドル超を使った(2026-10-03)。既定では持ち越し期間に入る分だけを分類し、
+ *    それより古い分は collect --classify-since で明示したときだけ分類する。
+ *    「古さ」は updatedAt(未分類になった時刻)で測る。detectedAt で測ると、本文が変わって
+ *    再分類に戻った既知の記事(報酬改定 Q&A の追補など)が古い扱いになり、配信されなくなる。
  */
 
 import type { AppContext, ClassifyChannelInfo, ClassifyInputItem, Item } from '../types.js';
-import { isoOf } from '../util/time.js';
+import { addDays, isoOf } from '../util/time.js';
+import { CARRY_OVER_DAYS } from './summarize.js';
 
 /** 1 リクエストにまとめる件数(詳細設計書 §7.1)。 */
 const BATCH_SIZE = 20;
@@ -26,8 +33,32 @@ const BATCH_SIZE = 20;
 /** 1 回の呼び出しで処理する未分類アイテムの既定上限。 */
 const DEFAULT_LIMIT = 200;
 
-/** AI に渡す本文の先頭文字数(詳細設計書 §7.1)。 */
-const EXCERPT_CHARS = 1500;
+/**
+ * AI に渡す本文の先頭文字数(詳細設計書 §7.1)。
+ * 入力トークンの大半はここで決まる。関係するチャネルと重要度の判断には
+ * タイトルとリード文で足りるため、1500 から 500 に絞った(2026-10-03)。
+ * 要約側(summarize)は数値・日付を正確に写す必要があるので、こちらとは別に長く渡している。
+ */
+const EXCERPT_CHARS = 500;
+
+/**
+ * 既定で分類する範囲(現在時刻から何日前に未分類になったものまでか)。
+ * まとめに載るのは当日の窓(1 日)と持ち越し(CARRY_OVER_DAYS 日)の分だけなので、
+ * それより古い未分類アイテムを分類しても配信されず、費用だけがかかる。
+ * 巡回(collect)とまとめ(summarize)の時刻差を吸収するため 1 日の余裕を足す。
+ */
+const DEFAULT_LOOKBACK_DAYS = CARRY_OVER_DAYS + 2;
+
+export interface ClassifyOptions {
+  /** 一度に処理する未分類アイテムの上限(既定 200)。 */
+  limit?: number;
+  /**
+   * この時刻(ISO8601 UTC)以降に未分類になった(新着として検知された、
+   * または本文が変わって再分類に戻った)アイテムだけを分類する。
+   * 省略時は現在時刻から DEFAULT_LOOKBACK_DAYS 日前。
+   */
+  since?: string;
+}
 
 /** 例外から人が読めるメッセージを取り出す(スタックはログの debug に留める)。 */
 function errorMessage(e: unknown): string {
@@ -37,20 +68,20 @@ function errorMessage(e: unknown): string {
 /**
  * 未分類アイテムを AI で分類し、結果を items に書き戻す。
  *
- * @param limit 一度に処理する未分類アイテムの上限(既定 200)。
  * @returns 書き込めた件数と、バッチ単位の失敗理由(日本語)。例外は投げない。
  */
 export async function classifyPending(
   ctx: AppContext,
-  limit?: number,
+  opts?: ClassifyOptions,
 ): Promise<{ classified: number; errors: string[] }> {
   const logger = ctx.logger.child({ job: 'classify' });
   const errors: string[] = [];
   let classified = 0;
 
-  const items = await ctx.store.listUnclassifiedItems(limit ?? DEFAULT_LIMIT);
+  const since = opts?.since ?? addDays(isoOf(ctx.clock.now()), -DEFAULT_LOOKBACK_DAYS);
+  const items = await ctx.store.listUnclassifiedItems(opts?.limit ?? DEFAULT_LIMIT, since);
   if (items.length === 0) {
-    logger.info('未分類のアイテムはありません');
+    logger.info('未分類のアイテムはありません', { since });
     return { classified, errors };
   }
 
@@ -76,7 +107,11 @@ export async function classifyPending(
   for (let i = 0; i < items.length; i += BATCH_SIZE) {
     batches.push(items.slice(i, i + BATCH_SIZE));
   }
-  logger.info('未分類アイテムの分類を開始します', { pending: items.length, batches: batches.length });
+  logger.info('未分類アイテムの分類を開始します', {
+    pending: items.length,
+    batches: batches.length,
+    since,
+  });
 
   for (const [index, batch] of batches.entries()) {
     const batchNo = index + 1;

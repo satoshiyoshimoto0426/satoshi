@@ -114,6 +114,7 @@ export async function createContext(overrides: ContextOverrides = {}): Promise<A
     storeKind: runtime.storeKind,
     dryRun: runtime.dryRun,
     model: runtime.anthropicModel,
+    classifyModel: runtime.anthropicClassifyModel,
     channels: config.channels.length,
     sources: config.sources.length,
     enabledSources: config.sources.filter((source) => source.enabled).length,

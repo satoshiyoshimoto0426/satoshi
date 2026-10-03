@@ -113,12 +113,13 @@ export function createMemoryStore(): MemoryStore {
       items.set(item.id, clone(item));
     },
 
-    async listUnclassifiedItems(limit: number): Promise<Item[]> {
+    async listUnclassifiedItems(limit: number, updatedSince?: string): Promise<Item[]> {
       // limit <= 0 は「0 件要求」とみなす(Firestore の limit(0) と同じ挙動)。
       if (limit <= 0) return [];
       return [...items.values()]
         .filter((item) => item.classifiedAt === null)
-        .sort((a, b) => compareAsc(a.detectedAt, b.detectedAt, a.id, b.id))
+        .filter((item) => updatedSince === undefined || item.updatedAt >= updatedSince)
+        .sort((a, b) => compareAsc(a.updatedAt, b.updatedAt, a.id, b.id))
         .slice(0, limit)
         .map(clone);
     },

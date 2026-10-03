@@ -23,6 +23,7 @@ function runtimeConfig(over: Partial<RuntimeConfig> = {}): RuntimeConfig {
     firestoreDatabaseId: '(default)',
     storeKind: 'memory',
     anthropicModel: 'claude-opus-5',
+    anthropicClassifyModel: 'claude-opus-5',
     userAgent: 'SeidoWatchBot/1.0 (+mailto:ops@example.com)',
     hostDelayMs: 2000,
     hostConcurrency: 4,

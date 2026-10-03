@@ -379,6 +379,7 @@ function testRuntime(): RuntimeConfig {
     firestoreDatabaseId: '(default)',
     storeKind: 'memory',
     anthropicModel: 'claude-opus-5',
+    anthropicClassifyModel: 'claude-opus-5',
     userAgent: 'SeidoWatchBot/1.0 (+mailto:ops@example.com)',
     // テストでは待たない(実時間を消費しないため)。
     hostDelayMs: 0,

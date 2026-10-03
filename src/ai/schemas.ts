@@ -39,7 +39,18 @@ const ITEM_KINDS = [
 /** 重要度。src/types.ts の `Importance` と 1 対 1 で対応させる。 */
 const IMPORTANCE_LEVELS = ['high', 'medium', 'low'] as const;
 
-/** 各文字列項目の上限(詳細設計書 §7.1 / §7.2 の maxLength)。 */
+/**
+ * reason の目安の文字数。AI にはこの長さで書くよう伝える。
+ * reason は運用者の監査用で配信文には使わない。分類は件数が多く、出力トークンが
+ * そのまま費用になるため短くした(2026-10-03 に 200 → 40)。
+ */
+const REASON_TARGET_CHARS = 40;
+
+/**
+ * 各文字列項目の上限(詳細設計書 §7.1 / §7.2 の maxLength)。
+ * reason は目安(REASON_TARGET_CHARS)より緩くしてある。少し長いだけで
+ * バッチ 20 件の分類がまとめて失敗するのは割に合わないため。
+ */
 const REASON_MAX_CHARS = 200;
 const HEADLINE_MAX_CHARS = 60;
 const SUMMARY_MAX_CHARS = 140;
@@ -86,7 +97,7 @@ export function buildClassifyJsonSchema(channelIds: string[]): Record<string, un
               description: 'YYYY-MM-DD。原文に明記がある場合のみ',
             },
             deadline: { anyOf: [{ type: 'string' }, { type: 'null' }] },
-            reason: { type: 'string', description: `${String(REASON_MAX_CHARS)} 文字以内` },
+            reason: { type: 'string', description: `${String(REASON_TARGET_CHARS)} 文字程度の一文` },
           },
           required: [
             'id',

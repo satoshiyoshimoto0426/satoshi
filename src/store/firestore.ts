@@ -182,14 +182,16 @@ export function createFirestoreStore(projectId: string | null, databaseId: strin
       await itemsCol.doc(item.id).set(toDocumentData(item));
     },
 
-    async listUnclassifiedItems(limit: number): Promise<Item[]> {
+    async listUnclassifiedItems(limit: number, updatedSince?: string): Promise<Item[]> {
       // limit <= 0 のクエリは Firestore がエラーにするため、呼ぶ前に空で返す。
       if (limit <= 0) return [];
-      const snapshot = await itemsCol
-        .where('classifiedAt', '==', null)
-        .orderBy('detectedAt')
-        .limit(limit)
-        .get();
+      // 範囲条件と並び替えを同じ updatedAt にそろえ、複合インデックス
+      // (classifiedAt + updatedAt。infra/terraform/main.tf)1 本で賄う。
+      let query = itemsCol.where('classifiedAt', '==', null);
+      if (updatedSince !== undefined) {
+        query = query.where('updatedAt', '>=', updatedSince);
+      }
+      const snapshot = await query.orderBy('updatedAt').limit(limit).get();
       return snapshot.docs.map((doc) => fromDocumentData<Item>(doc.data()));
     },
 

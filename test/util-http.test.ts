@@ -26,6 +26,7 @@ function makeRuntime(over: Partial<RuntimeConfig> = {}): RuntimeConfig {
     firestoreDatabaseId: '(default)',
     storeKind: 'memory',
     anthropicModel: 'claude-opus-5',
+    anthropicClassifyModel: 'claude-opus-5',
     userAgent: USER_AGENT,
     hostDelayMs: 0,
     hostConcurrency: 4,

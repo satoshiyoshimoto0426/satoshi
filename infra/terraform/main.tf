@@ -55,6 +55,7 @@ locals {
     STORE_KIND               = "firestore"
     CONFIG_DIR               = "/app/config"
     ANTHROPIC_MODEL          = "claude-opus-5"
+    ANTHROPIC_CLASSIFY_MODEL = "claude-opus-5" # 分類だけ別モデルにできる。分類は件数が多く AI 費用の大半を占める
     USER_AGENT               = "SeidoWatchBot/1.0 (+mailto:ops@example.com)"
     HOST_DELAY_MS            = "2000" # NFR-07: 同一ホストへは 2 秒以上あける
     HOST_CONCURRENCY         = "4"
@@ -187,6 +188,10 @@ resource "google_firestore_field" "ttl" {
 
 # 複合インデックス。単一フィールドの自動インデックスでは賄えないクエリのみ定義する。
 # (Store.listUnclassifiedItems / Store.listRuns に対応)
+#
+# items_unclassified(detectedAt)は 2026-10-03 以前のイメージが使う。現行コードは
+# items_unclassified_by_updated を使うが、古い SHA へのロールバック(運用手順書 §6.3)で
+# 分類が FAILED_PRECONDITION で落ちないよう残している。
 resource "google_firestore_index" "items_unclassified" {
   project     = var.project_id
   database    = google_firestore_database.default.name
@@ -200,6 +205,24 @@ resource "google_firestore_index" "items_unclassified" {
   }
   fields {
     field_path = "detectedAt"
+    order      = "ASCENDING"
+  }
+}
+
+resource "google_firestore_index" "items_unclassified_by_updated" {
+  project     = var.project_id
+  database    = google_firestore_database.default.name
+  collection  = "items"
+  query_scope = "COLLECTION"
+
+  # classifiedAt == null の等価条件 + updatedAt >= 範囲の開始 + updatedAt 昇順の並び替え。
+  # 配信され得ない古い未分類アイテムに AI 費用をかけないための絞り込み(src/pipeline/classify.ts)。
+  fields {
+    field_path = "classifiedAt"
+    order      = "ASCENDING"
+  }
+  fields {
+    field_path = "updatedAt"
     order      = "ASCENDING"
   }
 }

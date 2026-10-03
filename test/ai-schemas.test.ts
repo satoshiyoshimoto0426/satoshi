@@ -141,11 +141,11 @@ describe('buildClassifyJsonSchema', () => {
     expect(at(schema, 'properties.results.items.properties.deadline.anyOf')).toEqual(nullableString);
   });
 
-  it('reason の文字数上限は API に送らず、description で伝える', () => {
+  it('reason の文字数は API に送らず、description で目安(40 文字)を伝える', () => {
     const schema = buildClassifyJsonSchema(['welfare']);
     const reason = at(schema, 'properties.results.items.properties.reason') as Record<string, unknown>;
     expect(reason.maxLength).toBeUndefined();
-    expect(reason.description).toContain('200');
+    expect(reason.description).toContain('40');
   });
 
   it('properties の集合は required と一致する(定義漏れ・余剰が無い)', () => {
@@ -311,7 +311,7 @@ describe('ClassifyResponseSchema', () => {
     expect(ClassifyResponseSchema.safeParse({ results: [], note: 'extra' }).success).toBe(false);
   });
 
-  it('reason が 200 文字を超えたら弾く', () => {
+  it('reason が 200 文字を超えたら弾く(目安の 40 文字を少し超えた程度では落とさない)', () => {
     expect(
       ClassifyResponseSchema.safeParse({ results: [validClassifyResult({ reason: 'あ'.repeat(201) })] })
         .success,

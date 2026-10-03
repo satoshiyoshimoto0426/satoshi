@@ -353,6 +353,7 @@ interface CollectCliOptions {
   source?: string[];
   bootstrap?: boolean;
   skipClassify?: boolean;
+  classifySince?: string;
 }
 interface SummarizeCliOptions {
   date?: string;
@@ -397,6 +398,10 @@ program
   .option('--source <id...>', '対象ソース id。省略時は有効な全ソース')
   .option('--bootstrap', '既存記事を「既知」として取り込む。初回登録時は必ず付ける')
   .option('--skip-classify', 'AI 分類を行わない(取り込みだけ確認したいとき)')
+  .option(
+    '--classify-since <YYYY-MM-DD>',
+    'この日のまとめに載るはずだった古い未分類記事まで分類する(summarize --since と同じ日付を渡す)',
+  )
   .action((options: CollectCliOptions) =>
     runCommand('collect', async (logger) => {
       const ctx = await createContext({ logger });
@@ -404,6 +409,7 @@ program
         sourceIds: options.source,
         bootstrap: options.bootstrap === true,
         skipClassify: options.skipClassify === true,
+        classifySince: options.classifySince,
       });
       reportRun(logger, run, false);
     }),

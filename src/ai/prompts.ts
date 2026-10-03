@@ -38,7 +38,7 @@ user メッセージは JSON です。
 - importance は現場運用への影響の大きさです。報酬や基準の改定、申請期限の設定は high、参考情報は low を目安にします。
 - kind は記事の種別です。law_amendment(法令改正)/ fee_revision(報酬・料金改定)/ notice(通知・事務連絡)/
   public_comment(意見募集)/ budget(予算・補助金)/ event(イベント・研修)/ other(その他)から選びます。
-- reason は運用者が判定を監査するための一文です。なぜその relevance と channels にしたのかを日本語 200 文字以内で簡潔に書きます。
+- reason は運用者が判定を監査するための一文です。なぜその relevance と channels にしたのかを日本語 40 文字程度で短く書きます。
 - region を持つアイテムは自治体の情報です。国(省庁)の通知をそのまま転載しただけの内容なら isDuplicateOfNational を true にします。
   後段の要約では国側のアイテムを優先するためです。自治体独自の上乗せ・独自の期限・独自の運用がある場合は false にします。
 

@@ -56,7 +56,7 @@ export interface SummarizeOptions {
 }
 
 /** 対象ウィンドウの締め時刻(JST)。詳細設計書 §6.2: [前日 07:00, 当日 07:00)。 */
-const WINDOW_CUTOFF_JST = '07:00';
+export const WINDOW_CUTOFF_JST = '07:00';
 
 /** 1 回の AI 呼び出しに渡すアイテムの上限(詳細設計書 §7.2)。 */
 const MAX_AI_INPUT_ITEMS = 20;
@@ -89,7 +89,7 @@ const REDELIVER_MIN_INTERVAL_DAYS = 7;
  *   「後手を踏まない」という本システムの目的に直接反する。
  *   そこで、まだ一度も配信していないアイテムはこの日数だけ候補に戻す。
  */
-const CARRY_OVER_DAYS = 3;
+export const CARRY_OVER_DAYS = 3;
 
 /**
  * 更新記事をさかのぼって探す日数。
@@ -661,6 +661,7 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
         `対象日: ${dateJst}`,
         '分類が終わっていないため「本日の新着はありません」とは配信しません。',
         'collect を再実行して分類を完了させたうえで、summarize --force を実行してください。',
+        '--since で 5 日より前の分まで含めている場合は、collect に --classify-since で同じ日付を渡してください。',
       ]);
       return 'failed';
     }
