@@ -30,14 +30,15 @@ import type {
   SourceConfig,
   SourceState,
 } from '../types.js';
-import { RobotsDisallowedError } from '../types.js';
+import { ConfigError, RobotsDisallowedError } from '../types.js';
 import { extractContent } from '../fetchers/extract.js';
 import { fetchSource } from '../fetchers/index.js';
 import { itemIdFor, sha256 } from '../util/hash.js';
-import { addDays, isoOf, toJstDateString } from '../util/time.js';
+import { addDays, digestWindow, isValidDateString, isoOf, toJstDateString } from '../util/time.js';
 import { canonicalizeUrl, hostOf } from '../util/url.js';
 import { classifyPending } from './classify.js';
 import { EMPTY_WARN_THRESHOLD } from './coverage.js';
+import { WINDOW_CUTOFF_JST } from './summarize.js';
 
 export interface CollectOptions {
   /** 対象ソース ID。未指定なら有効な全ソース。 */
@@ -46,6 +47,12 @@ export interface CollectOptions {
   bootstrap?: boolean;
   /** 収集だけ行い、分類(§7.1)を呼ばない。 */
   skipClassify?: boolean;
+  /**
+   * 分類の対象を、この日(JST, YYYY-MM-DD)のまとめに載るはずだった分までさかのぼる。
+   * summarize --since と同じ日付を渡せば、その取りこぼしをまとめて配信できる。
+   * 省略時は持ち越し期間に入る分だけを分類する(古い分は配信されず費用だけかかるため)。
+   */
+  classifySince?: string;
 }
 
 /** 連続失敗がこの回数以上になったら Slack 警告(詳細設計書 §12)。 */
@@ -168,6 +175,14 @@ export async function runCollect(ctx: AppContext, opts?: CollectOptions): Promis
   const logger = ctx.logger.child({ job: 'collect', runId });
   const { runtime } = ctx.config;
   const bootstrap = opts?.bootstrap === true;
+
+  // 巡回を始める前に検査する。数分かけて巡回したあとで日付の書き間違いに気付くのは無駄が大きい。
+  const classifySince = opts?.classifySince;
+  if (classifySince !== undefined && !isValidDateString(classifySince)) {
+    throw new ConfigError(
+      `--classify-since は 'YYYY-MM-DD' 形式の実在する日付で指定してください: ${classifySince}`,
+    );
+  }
 
   const startedAtDate = ctx.clock.now();
   const startedAt = isoOf(startedAtDate);
@@ -661,7 +676,11 @@ export async function runCollect(ctx: AppContext, opts?: CollectOptions): Promis
       logger.info('分類をスキップしました(--skip-classify)');
     } else {
       try {
-        const classifyResult = await classifyPending(ctx);
+        const classifyResult = await classifyPending(ctx, {
+          // summarize --since と同じく「その日のまとめの窓の開始時刻」から。
+          since:
+            classifySince === undefined ? undefined : digestWindow(classifySince, WINDOW_CUTOFF_JST).from,
+        });
         counts.classified = classifyResult.classified;
         errors.push(...classifyResult.errors);
       } catch (e) {

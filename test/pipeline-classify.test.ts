@@ -140,10 +140,10 @@ describe('バッチ分割', () => {
     expect(sent).toEqual(pending.map((item) => item.id));
   });
 
-  it('detectedAt の昇順(古い順)で渡される', async () => {
+  it('未分類になった順(updatedAt の昇順)で渡される', async () => {
     const ai = aiWith(async (items) => ({ results: echoResults(items), meta: META }));
     const items = pendingItems(3);
-    // 投入順を入れ替えても、取り出しは detectedAt 昇順になる。
+    // 投入順を入れ替えても、取り出しは updatedAt(未分類になった時刻)の昇順になる。
     const ctx = contextWith([items[2] as Item, items[0] as Item, items[1] as Item], ai);
 
     await classifyPending(ctx);
@@ -276,7 +276,7 @@ describe('バッチの失敗', () => {
 // ---------------------------------------------------------------------------
 
 describe('AI へ渡す入力', () => {
-  it('excerpt は contentText の先頭 1500 文字', async () => {
+  it('excerpt は contentText の先頭 500 文字(入力トークン = 費用を抑えるため)', async () => {
     const longText = 'あ'.repeat(3000);
     const ai = aiWith(async (items) => ({ results: echoResults(items), meta: META }));
     const ctx = contextWith(pendingItems(1, { contentText: longText }), ai);
@@ -284,11 +284,11 @@ describe('AI へ渡す入力', () => {
     await classifyPending(ctx);
 
     const excerpt = ai.classifyCalls[0]?.items[0]?.excerpt ?? '';
-    expect(excerpt).toHaveLength(1500);
-    expect(excerpt).toBe(longText.slice(0, 1500));
+    expect(excerpt).toHaveLength(500);
+    expect(excerpt).toBe(longText.slice(0, 500));
   });
 
-  it('1500 文字以下の本文はそのまま渡す', async () => {
+  it('500 文字以下の本文はそのまま渡す', async () => {
     const text = 'あ'.repeat(100);
     const ai = aiWith(async (items) => ({ results: echoResults(items), meta: META }));
     const ctx = contextWith(pendingItems(1, { contentText: text }), ai);
@@ -408,6 +408,68 @@ describe('分類結果の保存', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 分類する範囲(配信され得ない古いアイテムに費用をかけない)
+// ---------------------------------------------------------------------------
+
+describe('分類する範囲', () => {
+  // 現在時刻は DEFAULT_NOW(2026-09-12T22:30Z)。既定の範囲は持ち越し 3 日 + 2 日 = 5 日前まで。
+  const BOUNDARY = '2026-09-07T22:30:00.000Z';
+
+  it('既定では 5 日より前に未分類になったアイテムを AI に渡さず、未分類のまま残す', async () => {
+    const ai = aiWith(async (items) => ({ results: echoResults(items), meta: META }));
+    const [tooOld] = pendingItems(1, { detectedAt: '2026-09-07T22:29:59.999Z' });
+    const [atBoundary] = pendingItems(1, {
+      canonicalUrl: 'https://www.mhlw.go.jp/stf/boundary.html',
+      detectedAt: BOUNDARY,
+    });
+    const ctx = contextWith([tooOld as Item, atBoundary as Item], ai);
+
+    const result = await classifyPending(ctx);
+
+    expect(ai.classifyCalls[0]?.items.map((item) => item.id)).toEqual([atBoundary?.id]);
+    expect(result.classified).toBe(1);
+    expect((await ctx.store.getItem(tooOld?.id ?? ''))?.classifiedAt).toBeNull();
+  });
+
+  it('古いアイテムが limit を埋めていても、新しいアイテムの分類を妨げない', async () => {
+    const ai = aiWith(async (items) => ({ results: echoResults(items), meta: META }));
+    const old = pendingItems(3, { detectedAt: '2026-09-01T00:00:00.000Z' }).map((item, i) => ({
+      ...item,
+      id: `old-${String(i)}`,
+    }));
+    const [fresh] = pendingItems(1, { canonicalUrl: 'https://www.mhlw.go.jp/stf/fresh.html' });
+    const ctx = contextWith([...old, fresh as Item], ai);
+
+    await classifyPending(ctx, { limit: 1 });
+
+    expect(ai.classifyCalls[0]?.items.map((item) => item.id)).toEqual([fresh?.id]);
+  });
+
+  it('検知が古くても、本文が変わって最近未分類に戻った既知記事は分類する', async () => {
+    const ai = aiWith(async (items) => ({ results: echoResults(items), meta: META }));
+    const [requeued] = pendingItems(1, {
+      detectedAt: '2026-08-01T00:00:00.000Z',
+      updatedAt: '2026-09-12T20:00:00.000Z',
+    });
+    const ctx = contextWith([requeued as Item], ai);
+
+    const result = await classifyPending(ctx);
+
+    expect(result.classified).toBe(1);
+  });
+
+  it('since を渡すと、その時刻以降に未分類になったものまでさかのぼって分類する', async () => {
+    const ai = aiWith(async (items) => ({ results: echoResults(items), meta: META }));
+    const [old] = pendingItems(1, { detectedAt: '2026-09-01T00:00:00.000Z' });
+    const ctx = contextWith([old as Item], ai);
+
+    const result = await classifyPending(ctx, { since: '2026-08-31T22:00:00.000Z' });
+
+    expect(result.classified).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // limit
 // ---------------------------------------------------------------------------
 
@@ -416,7 +478,7 @@ describe('limit', () => {
     const ai = aiWith(async (items) => ({ results: echoResults(items), meta: META }));
     const ctx = contextWith(pendingItems(30), ai);
 
-    const result = await classifyPending(ctx, 5);
+    const result = await classifyPending(ctx, { limit: 5 });
 
     expect(ai.classifyCalls).toHaveLength(1);
     expect(ai.classifyCalls[0]?.items).toHaveLength(5);
@@ -428,7 +490,7 @@ describe('limit', () => {
     const ai = aiWith(async (items) => ({ results: echoResults(items), meta: META }));
     const ctx = contextWith(pendingItems(30), ai);
 
-    await classifyPending(ctx, 25);
+    await classifyPending(ctx, { limit: 25 });
 
     expect(ai.classifyCalls.map((call) => call.items.length)).toEqual([20, 5]);
   });
@@ -439,7 +501,7 @@ describe('limit', () => {
     });
     const ctx = contextWith(pendingItems(3), ai);
 
-    const result = await classifyPending(ctx, 0);
+    const result = await classifyPending(ctx, { limit: 0 });
 
     expect(result).toEqual({ classified: 0, errors: [] });
     expect(ai.classifyCalls).toHaveLength(0);

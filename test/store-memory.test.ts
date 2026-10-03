@@ -181,7 +181,7 @@ describe('items の取得と保存', () => {
 // ---------------------------------------------------------------------------
 
 describe('listUnclassifiedItems', () => {
-  it('classifiedAt が null のものだけを detectedAt 昇順で返す', async () => {
+  it('classifiedAt が null のものだけを updatedAt 昇順で返す', async () => {
     const store = createMemoryStore();
     const pendingOld = itemAt('001', '2026-09-12T01:00:00.000Z', {
       classification: null,
@@ -223,7 +223,7 @@ describe('listUnclassifiedItems', () => {
     expect(await store.listUnclassifiedItems(-1)).toEqual([]);
   });
 
-  it('detectedAt が同値なら id 昇順でタイブレークする(決定的)', async () => {
+  it('updatedAt が同値なら id 昇順でタイブレークする(決定的)', async () => {
     const store = createMemoryStore();
     const same = '2026-09-12T01:00:00.000Z';
     const a = itemAt('001', same, { classification: null, classifiedAt: null });
@@ -239,6 +239,31 @@ describe('listUnclassifiedItems', () => {
     const store = createMemoryStore();
     store.seed({ items: [itemAt('001', '2026-09-12T01:00:00.000Z')] });
     expect(await store.listUnclassifiedItems(10)).toEqual([]);
+  });
+
+  it('updatedSince 以降(境界を含む)に未分類になったものだけに絞れる', async () => {
+    const store = createMemoryStore();
+    const before = itemAt('001', '2026-09-11T23:59:59.999Z', { classification: null, classifiedAt: null });
+    const boundary = itemAt('002', '2026-09-12T00:00:00.000Z', { classification: null, classifiedAt: null });
+    store.seed({ items: [before, boundary] });
+
+    const got = await store.listUnclassifiedItems(10, '2026-09-12T00:00:00.000Z');
+
+    expect(got.map((item) => item.id)).toEqual([boundary.id]);
+  });
+
+  it('検知は古くても、本文が変わって最近未分類に戻ったものは拾う(updatedAt で見る)', async () => {
+    const store = createMemoryStore();
+    const requeued = itemAt('001', '2026-08-01T00:00:00.000Z', {
+      updatedAt: '2026-09-12T05:00:00.000Z',
+      classification: null,
+      classifiedAt: null,
+    });
+    store.seed({ items: [requeued] });
+
+    const got = await store.listUnclassifiedItems(10, '2026-09-12T00:00:00.000Z');
+
+    expect(got.map((item) => item.id)).toEqual([requeued.id]);
   });
 });
 

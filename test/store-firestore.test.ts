@@ -595,12 +595,24 @@ describe('listItemsInWindow', () => {
 });
 
 describe('listUnclassifiedItems', () => {
-  it("where('classifiedAt','==',null).orderBy('detectedAt').limit(n) を組む", async () => {
+  it("where('classifiedAt','==',null).orderBy('updatedAt').limit(n) を組む", async () => {
     await newStore().listUnclassifiedItems(50);
 
     const query = queriesFor('items')[0];
     expect(query?.where).toEqual([['classifiedAt', '==', null]]);
-    expect(query?.orderBy).toEqual([['detectedAt', 'asc']]);
+    expect(query?.orderBy).toEqual([['updatedAt', 'asc']]);
+    expect(query?.limit).toBe(50);
+  });
+
+  it('updatedSince を渡すと updatedAt の範囲条件を足す(並び替えと同じフィールド = 複合インデックス 1 本)', async () => {
+    await newStore().listUnclassifiedItems(50, '2026-09-12T00:00:00.000Z');
+
+    const query = queriesFor('items')[0];
+    expect(query?.where).toEqual([
+      ['classifiedAt', '==', null],
+      ['updatedAt', '>=', '2026-09-12T00:00:00.000Z'],
+    ]);
+    expect(query?.orderBy).toEqual([['updatedAt', 'asc']]);
     expect(query?.limit).toBe(50);
   });
 

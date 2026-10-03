@@ -308,6 +308,24 @@ describe('リクエストボディの形', () => {
     expect(body.max_tokens).toBe(16000);
   });
 
+  it('分類は anthropicClassifyModel、要約は anthropicModel で呼ぶ', async () => {
+    const items = makeDigestItems(1);
+    const fake = createFakeAnthropic((index, body) =>
+      index === 0 ? echoClassifyResponder(index, body) : makeMessage(digestResponseJson(items)),
+    );
+    const runtime = makeRuntime({ anthropicModel: 'digest-model', anthropicClassifyModel: 'classify-model' });
+    const client = createAiClient(runtime, createFakeLogger(), { anthropic: fake.anthropic });
+
+    const classified = await client.classify(makeClassifyItems(1), CHANNELS);
+    const digested = await client.generateDigest(makeChannel(), '2026-09-13', items);
+
+    expect((fake.bodies[0] as StreamBody).model).toBe('classify-model');
+    expect((fake.bodies[1] as StreamBody).model).toBe('digest-model');
+    // 監査用の記録(digest.model など)にも実際に使ったモデルが残る。
+    expect(classified.meta.model).toBe('classify-model');
+    expect(digested.meta.model).toBe('digest-model');
+  });
+
   it('thinking は { type: "adaptive" } のみ', async () => {
     const { client, fake } = setup(echoClassifyResponder);
     await client.classify(makeClassifyItems(1), CHANNELS);

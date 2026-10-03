@@ -90,7 +90,13 @@ export interface RuntimeConfig {
   firestoreDatabaseId: string;
   /** 'firestore' | 'memory'。テストとドライランでは memory。 */
   storeKind: 'firestore' | 'memory';
+  /** 要約(ダイジェスト生成)に使うモデル。 */
   anthropicModel: string;
+  /**
+   * 分類に使うモデル。件数が多く費用の大半を占めるため、要約とは別に選べるようにしてある。
+   * 未指定なら anthropicModel と同じ。
+   */
+  anthropicClassifyModel: string;
   userAgent: string;
   /** 同一ホストへの最小アクセス間隔(ms)。NFR-07。 */
   hostDelayMs: number;
@@ -412,8 +418,12 @@ export interface Store {
   getItem(id: string): Promise<Item | null>;
   getItems(ids: string[]): Promise<Item[]>;
   putItem(item: Item): Promise<void>;
-  /** 分類がまだ付いていないアイテムを古い順に取得。 */
-  listUnclassifiedItems(limit: number): Promise<Item[]>;
+  /**
+   * 分類がまだ付いていないアイテムを、未分類になった時刻(updatedAt)の古い順に取得。
+   * updatedSince(ISO8601 UTC)を渡すと、それ以降に未分類になったものだけに絞る。
+   * updatedAt で見るのは、本文が変わって再分類に戻った既知記事(detectedAt は古いまま)を拾うため。
+   */
+  listUnclassifiedItems(limit: number, updatedSince?: string): Promise<Item[]>;
   /** query.field(既定 detectedAt)が [from, to) のアイテムを取得。 */
   listItemsInWindow(query: ItemQuery): Promise<Item[]>;
   /** digestedIn に digestId を追記する。 */

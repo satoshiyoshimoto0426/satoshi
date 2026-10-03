@@ -109,6 +109,8 @@ interface AnthropicLike {
 
 /** 1 回の API 呼び出しに必要な可変部分。 */
 interface ModelRequest {
+  /** 分類と要約で別のモデルを使えるよう、呼び出しごとに指定する。 */
+  model: string;
   system: string;
   userMessage: string;
   schema: Record<string, unknown>;
@@ -305,7 +307,7 @@ export function createAiClient(runtime: RuntimeConfig, logger: Logger, deps?: Ai
       // ここが契約で固定されたリクエスト形。
       // budget_tokens / temperature / top_p / assistant プレフィルは 400 になるため付けない。
       const stream = client.messages.stream({
-        model: runtime.anthropicModel,
+        model: request.model,
         max_tokens: MAX_TOKENS,
         thinking: { type: 'adaptive' },
         output_config: {
@@ -346,7 +348,7 @@ export function createAiClient(runtime: RuntimeConfig, logger: Logger, deps?: Ai
 
     const rawResponse = extractText(message);
     const meta: AiCallMeta = {
-      model: runtime.anthropicModel,
+      model: request.model,
       // system プロンプトは固定文字列なのでコード側にある。可変部分(user メッセージ)だけを監査用に残す。
       prompt: request.userMessage,
       rawResponse,
@@ -429,7 +431,7 @@ export function createAiClient(runtime: RuntimeConfig, logger: Logger, deps?: Ai
       if (items.length === 0) {
         return {
           results: [],
-          meta: { model: runtime.anthropicModel, prompt: '', rawResponse: '', usage: null },
+          meta: { model: runtime.anthropicClassifyModel, prompt: '', rawResponse: '', usage: null },
         };
       }
 
@@ -451,6 +453,7 @@ export function createAiClient(runtime: RuntimeConfig, logger: Logger, deps?: Ai
         const userMessage = buildClassifyUserMessage(batch, channels);
         const { value, meta } = await callModel(
           {
+            model: runtime.anthropicClassifyModel,
             system: CLASSIFY_SYSTEM_PROMPT,
             userMessage,
             schema,
@@ -488,7 +491,7 @@ export function createAiClient(runtime: RuntimeConfig, logger: Logger, deps?: Ai
       }
 
       log.info('AI 分類が完了しました', { requested: items.length, classified: results.length });
-      return { results, meta: mergeMeta(runtime.anthropicModel, metas) };
+      return { results, meta: mergeMeta(runtime.anthropicClassifyModel, metas) };
     },
 
     async generateDigest(channel, dateJst, items) {
@@ -516,6 +519,7 @@ export function createAiClient(runtime: RuntimeConfig, logger: Logger, deps?: Ai
       const userMessage = buildDigestUserMessage(channel, dateJst, targetItems);
       const { value, meta } = await callModel(
         {
+          model: runtime.anthropicModel,
           system: DIGEST_SYSTEM_PROMPT,
           userMessage,
           schema: DIGEST_JSON_SCHEMA,
