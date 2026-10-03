@@ -507,3 +507,20 @@ describe('limit', () => {
     expect(ai.classifyCalls).toHaveLength(0);
   });
 });
+
+describe('分類する範囲(週次配信のチャネルがあるとき)', () => {
+  it('週次の窓(7 日)+ 持ち越し(3 日)+ 余裕(1 日)= 11 日前までを分類する', async () => {
+    const ai = aiWith(async (items) => ({ results: echoResults(items), meta: META }));
+    // DEFAULT_NOW(2026-09-12T22:30Z)の 11 日前は 2026-09-01T22:30Z。
+    const [inRange] = pendingItems(1, { detectedAt: '2026-09-01T22:30:00.000Z' });
+    const [tooOld] = pendingItems(1, {
+      canonicalUrl: 'https://www.mhlw.go.jp/stf/too-old.html',
+      detectedAt: '2026-09-01T22:29:59.999Z',
+    });
+    const ctx = contextWith([inRange as Item, tooOld as Item], ai, [makeChannel({ weeklyOn: 'mon' })]);
+
+    await classifyPending(ctx);
+
+    expect(ai.classifyCalls[0]?.items.map((item) => item.id)).toEqual([inRange?.id]);
+  });
+});

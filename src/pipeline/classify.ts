@@ -25,7 +25,7 @@
 
 import type { AppContext, ClassifyChannelInfo, ClassifyInputItem, Item } from '../types.js';
 import { addDays, isoOf } from '../util/time.js';
-import { CARRY_OVER_DAYS } from './summarize.js';
+import { CARRY_OVER_DAYS, digestPeriodDays } from './summarize.js';
 
 /** 1 リクエストにまとめる件数(詳細設計書 §7.1)。 */
 const BATCH_SIZE = 20;
@@ -43,11 +43,15 @@ const EXCERPT_CHARS = 500;
 
 /**
  * 既定で分類する範囲(現在時刻から何日前に未分類になったものまでか)。
- * まとめに載るのは当日の窓(1 日)と持ち越し(CARRY_OVER_DAYS 日)の分だけなので、
- * それより古い未分類アイテムを分類しても配信されず、費用だけがかかる。
+ * まとめに載るのはまとめの窓(毎日配信は 1 日、週次配信は 7 日)と持ち越し(CARRY_OVER_DAYS 日)の
+ * 分だけなので、それより古い未分類アイテムを分類しても配信されず、費用だけがかかる。
  * 巡回(collect)とまとめ(summarize)の時刻差を吸収するため 1 日の余裕を足す。
+ * チャネルごとに窓が違うので、最も長い窓に合わせる。
  */
-const DEFAULT_LOOKBACK_DAYS = CARRY_OVER_DAYS + 2;
+function defaultLookbackDays(ctx: AppContext): number {
+  const period = Math.max(1, ...ctx.config.channels.map(digestPeriodDays));
+  return period + CARRY_OVER_DAYS + 1;
+}
 
 export interface ClassifyOptions {
   /** 一度に処理する未分類アイテムの上限(既定 200)。 */
@@ -55,7 +59,7 @@ export interface ClassifyOptions {
   /**
    * この時刻(ISO8601 UTC)以降に未分類になった(新着として検知された、
    * または本文が変わって再分類に戻った)アイテムだけを分類する。
-   * 省略時は現在時刻から DEFAULT_LOOKBACK_DAYS 日前。
+   * 省略時は現在時刻から defaultLookbackDays 日前。
    */
   since?: string;
 }
@@ -78,7 +82,7 @@ export async function classifyPending(
   const errors: string[] = [];
   let classified = 0;
 
-  const since = opts?.since ?? addDays(isoOf(ctx.clock.now()), -DEFAULT_LOOKBACK_DAYS);
+  const since = opts?.since ?? addDays(isoOf(ctx.clock.now()), -defaultLookbackDays(ctx));
   const items = await ctx.store.listUnclassifiedItems(opts?.limit ?? DEFAULT_LIMIT, since);
   if (items.length === 0) {
     logger.info('未分類のアイテムはありません', { since });

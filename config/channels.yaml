@@ -12,6 +12,14 @@
 #
 # deliverAt は Cloud Scheduler の設定と突き合わせるための「記録値」であり、
 # この値を変えても起動時刻は変わらない(infra/terraform 側も併せて変更すること)。
+#
+# 週次配信(2026-10-03 から):
+#   weeklyOn の曜日に直近 7 日分のまとめを配信する。毎日配信に比べて、まとめを作る AI の
+#   呼び出しが 1/7 になり、LINE の通数も 1/7 になる(友だち 20 人なら無料枠 200 通/月に収まる)。
+#   Cloud Scheduler は毎日動いたままで、summarize が曜日を見て「まとめ」「至急」「何もしない」を決める。
+#   urgentWithinDays: 週 1 回では申請期限・意見募集の締切に間に合わないものがあるため、
+#   重要度 high かつ期限がこの日数以内の新着だけは、まとめの日以外でも翌朝に定型文で送る(AI 不使用)。
+#   毎日配信に戻すときは weeklyOn と urgentWithinDays を null にし、maxItems / maxChars を元(7 / 1500)に戻す。
 # =============================================================================
 channels:
   - id: ai_reskill
@@ -26,15 +34,18 @@ channels:
       AI事業者ガイドライン、AI関連法制・AI制度(AI戦略会議・AI制度研究会の議論を含む)、
       デジタル人材育成施策、中小企業向けの人材育成・DX関連の補助金・支援策
     relevanceThreshold: 0.6
-    maxItems: 7
+    # 週次配信なので 1 週間分を載せられるよう、毎日配信(7 項目 / 1,500 文字)より広げている。
+    maxItems: 12
     minItems: 3
-    maxChars: 1500
-    # 0 件の日も「新着なし」を配信する(FR-11 の決定事項)。
+    maxChars: 4000
+    # 0 件の日(週次配信は配信曜日に 0 件の週)も「新着なし」を配信する(FR-11 の決定事項)。
     # 受信者が「届かない = システム障害」と判別できるようにするため、false にしないこと。
     sendWhenEmpty: true
     deliverAt: '07:30'
     # 初期リリースは自動配信(要件定義書 §2.2)。承認運用に切り替える場合のみ true。
     requireApproval: false
+    weeklyOn: mon
+    urgentWithinDays: 14
 
   - id: welfare
     name: 就労支援、放課後デイ情報局
@@ -45,9 +56,12 @@ channels:
       放課後等デイサービスのガイドライン、障害者総合支援法・児童福祉法の改正、
       障害児支援・こども家庭庁の通知、自治体が発出する事業者向け通知(重要度の高いもの)
     relevanceThreshold: 0.6
-    maxItems: 7
+    # 週次配信なので 1 週間分を載せられるよう、毎日配信(7 項目 / 1,500 文字)より広げている。
+    maxItems: 12
     minItems: 3
-    maxChars: 1500
+    maxChars: 4000
     sendWhenEmpty: true
     deliverAt: '07:30'
     requireApproval: false
+    weeklyOn: mon
+    urgentWithinDays: 14

@@ -563,3 +563,168 @@ describe('runSummarize: チャネルの独立性(NFR-01)', () => {
     expect(alerts[0]?.level).toBe('error');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 週次配信(weeklyOn)と至急(urgentWithinDays)
+//
+// 既定の対象日 2026-09-13 は日曜。weeklyOn: 'sun' なら「まとめの日」、'mon' なら「至急の日」になる。
+// ---------------------------------------------------------------------------
+
+describe('runSummarize: 週次配信のまとめの日', () => {
+  const weekly = makeChannel({ weeklyOn: 'sun', urgentWithinDays: 14, maxChars: 4000 });
+
+  it('直近 7 日分([7 日前 07:00, 当日 07:00))を対象にし、見出しに対象期間を出す', async () => {
+    const sixDaysAgo = item(1, { detectedAt: '2026-09-07T10:00:00.000Z' });
+    const atFrom = item(2, { detectedAt: '2026-09-05T22:00:00.000Z' });
+    // 窓の直前。持ち越しで拾われないよう、このチャネルで配信済みにしておく。
+    const justBefore = item(3, {
+      detectedAt: '2026-09-05T21:59:59.999Z',
+      digestedIn: ['welfare_2026-09-06'],
+    });
+
+    const ctx = setup([sixDaysAgo, atFrom, justBefore], { channels: [weekly] });
+    await runSummarize(ctx, { date: DEFAULT_DATE_JST });
+
+    expect(aiInputIds(ctx)).toEqual([sixDaysAgo.id, atFrom.id].sort());
+    expect(digestOf(ctx).messageText.startsWith('【今週の制度・法改正まとめ】9/6(日)〜9/12(土)')).toBe(true);
+  });
+
+  it('このチャネルで既に届けた新着(至急・切り替え前の日次配信)は載せない。他チャネルでの配信は関係ない', async () => {
+    const alertedHere = item(1, {
+      detectedAt: '2026-09-09T10:00:00.000Z',
+      digestedIn: ['welfare_2026-09-10'],
+    });
+    const sentElsewhere = item(2, {
+      detectedAt: '2026-09-09T10:00:00.000Z',
+      digestedIn: ['ai_reskill_2026-09-10'],
+    });
+
+    const ctx = setup([alertedHere, sentElsewhere], { channels: [weekly] });
+    await runSummarize(ctx, { date: DEFAULT_DATE_JST });
+
+    expect(aiInputIds(ctx)).toEqual([sentElsewhere.id]);
+  });
+
+  it('対象 0 件なら「今週の新着はありません」を配信物として作る', async () => {
+    const ctx = setup([], { channels: [weekly] });
+    await runSummarize(ctx, { date: DEFAULT_DATE_JST });
+
+    const digest = digestOf(ctx);
+    expect(digest.status).toBe('generated');
+    expect(digest.messageText).toContain('今週の新着はありません。');
+  });
+});
+
+describe('runSummarize: 週次配信の至急(まとめの日以外)', () => {
+  const urgentChannel = makeChannel({ weeklyOn: 'mon', urgentWithinDays: 14 });
+  /** 至急の候補を探す範囲([当日 07:00 の 3 日前, 当日 07:00))の内側。 */
+  const RECENT = '2026-09-11T10:00:00.000Z';
+
+  function urgentItem(n: number, deadline: string | null, over: Partial<Item> = {}): Item {
+    return item(n, {
+      detectedAt: RECENT,
+      classification: makeClassification({ importance: 'high', deadline }),
+      ...over,
+    });
+  }
+
+  it('重要度 high かつ期限が 14 日以内のものだけを、AI を使わない定型文で送る', async () => {
+    const hit = urgentItem(1, '2026-09-20');
+    const tooFar = urgentItem(2, '2026-09-28'); // 15 日後
+    const past = urgentItem(3, '2026-09-12');
+    const noDeadline = urgentItem(4, null);
+    const notHigh = item(5, {
+      detectedAt: RECENT,
+      classification: makeClassification({ importance: 'medium', deadline: '2026-09-15' }),
+    });
+
+    const ctx = setup([hit, tooFar, past, noDeadline, notHigh], { channels: [urgentChannel] });
+    const run = await runSummarize(ctx, { date: DEFAULT_DATE_JST });
+
+    const digest = digestOf(ctx);
+    expect(ctx.ai.digestCalls).toHaveLength(0);
+    expect(digest.status).toBe('generated');
+    expect(digest.entries.map((entry) => entry.itemId)).toEqual([hit.id]);
+    expect(digest.messageText).toContain('【至急】期限が近い制度情報 9/13(日)');
+    expect(digest.messageText).toContain('期限: 9/20(日)');
+    expect(digest.messageText).toContain(hit.canonicalUrl);
+    // 送ったものは「このチャネルで配信済み」になり、翌日以降の至急や週次のまとめで重複しない。
+    expect((await ctx.store.getItem(hit.id))?.digestedIn).toContain(DIGEST_ID);
+    expect(run.counts.digestsGenerated).toBe(1);
+  });
+
+  it('期限が今日のものは送る(締切当日)', async () => {
+    const today = urgentItem(1, DEFAULT_DATE_JST);
+    const ctx = setup([today], { channels: [urgentChannel] });
+    await runSummarize(ctx, { date: DEFAULT_DATE_JST });
+
+    expect(digestOf(ctx).entries.map((entry) => entry.itemId)).toEqual([today.id]);
+  });
+
+  it('該当が無い日は何も送らない(skipped。「新着なし」も送らない)', async () => {
+    const ctx = setup([item(1, { detectedAt: RECENT })], { channels: [urgentChannel] });
+    const run = await runSummarize(ctx, { date: DEFAULT_DATE_JST });
+
+    const digest = digestOf(ctx);
+    expect(digest.status).toBe('skipped');
+    expect(digest.messageText).toBe('');
+    expect(ctx.ai.digestCalls).toHaveLength(0);
+    expect(run.counts.skipped).toBe(1);
+    expect(run.status).toBe('succeeded');
+  });
+
+  it('前日までに至急で送ったものは送らない', async () => {
+    const alerted = urgentItem(1, '2026-09-20', { digestedIn: ['welfare_2026-09-12'] });
+    const ctx = setup([alerted], { channels: [urgentChannel] });
+    await runSummarize(ctx, { date: DEFAULT_DATE_JST });
+
+    expect(digestOf(ctx).status).toBe('skipped');
+  });
+
+  it('3 日より前に検知したものは至急の対象にしない(週次のまとめに任せる)', async () => {
+    const old = urgentItem(1, '2026-09-20', { detectedAt: '2026-09-09T21:59:59.999Z' });
+    const ctx = setup([old], { channels: [urgentChannel] });
+    await runSummarize(ctx, { date: DEFAULT_DATE_JST });
+
+    expect(digestOf(ctx).status).toBe('skipped');
+  });
+
+  it('期限が近い順に最大 5 件。残りは件数だけ伝え、次回以降に回す(配信済みにしない)', async () => {
+    const deadlines = ['2026-09-25', '2026-09-14', '2026-09-20', '2026-09-16', '2026-09-22', '2026-09-18'];
+    const items = deadlines.map((deadline, i) => urgentItem(i + 1, deadline));
+    const ctx = setup(items, { channels: [urgentChannel] });
+    await runSummarize(ctx, { date: DEFAULT_DATE_JST });
+
+    const digest = digestOf(ctx);
+    const sentDeadlines = digest.entries.map((entry) => entry.dateNote);
+    expect(sentDeadlines).toEqual([
+      '期限 2026-09-14',
+      '期限 2026-09-16',
+      '期限 2026-09-18',
+      '期限 2026-09-20',
+      '期限 2026-09-22',
+    ]);
+    expect(digest.omittedCount).toBe(1);
+    expect(digest.messageText).toContain('ほかに期限が近い情報が 1 件あります。');
+    const latest = items[0];
+    expect((await ctx.store.getItem(latest?.id ?? ''))?.digestedIn).toEqual([]);
+  });
+
+  it('urgentWithinDays が null なら至急は送らない', async () => {
+    const ctx = setup([urgentItem(1, '2026-09-20')], {
+      channels: [makeChannel({ weeklyOn: 'mon', urgentWithinDays: null })],
+    });
+    await runSummarize(ctx, { date: DEFAULT_DATE_JST });
+
+    expect(digestOf(ctx).status).toBe('skipped');
+  });
+
+  it('未分類が残っていても失敗扱いにしない(未分類の検査は週次のまとめの担当)', async () => {
+    const pending = item(1, { detectedAt: RECENT, classification: null, classifiedAt: null });
+    const ctx = setup([pending], { channels: [urgentChannel] });
+    const run = await runSummarize(ctx, { date: DEFAULT_DATE_JST });
+
+    expect(digestOf(ctx).status).toBe('skipped');
+    expect(run.status).toBe('succeeded');
+  });
+});

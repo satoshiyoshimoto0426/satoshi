@@ -13,9 +13,12 @@ import {
   EMPTY_NOTICE,
   LINE_TEXT_LIMIT,
   fitToLimit,
+  URGENT_NOTICE,
   formatDigestMessage,
   formatEmptyMessage,
+  formatUrgentMessage,
 } from '../src/line/format.js';
+import type { UrgentNotice } from '../src/line/format.js';
 import type { ChannelConfig, CoverageSummary, DigestEntry, Importance } from '../src/types.js';
 
 // ---------------------------------------------------------------------------
@@ -38,6 +41,8 @@ const CHANNEL: ChannelConfig = {
   sendWhenEmpty: true,
   deliverAt: '07:30',
   requireApproval: false,
+  weeklyOn: null,
+  urgentWithinDays: null,
 };
 
 function channelWithMaxChars(maxChars: number): ChannelConfig {
@@ -447,5 +452,89 @@ describe('fitToLimit: 文字数上限への収め方', () => {
     expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(result.text)).toBe(
       false,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 週次配信と至急
+// ---------------------------------------------------------------------------
+
+describe('週次配信のチャネルの文面', () => {
+  const WEEKLY: ChannelConfig = { ...CHANNEL, weeklyOn: 'mon', urgentWithinDays: 14, maxChars: 4000 };
+
+  it('見出しに「今週」と対象期間(7 日前〜前日)が入る', () => {
+    const text = formatDigestMessage(WEEKLY, '2026-10-05', [makeEntry()], 0);
+    expect(text.split('\n').slice(0, 2)).toEqual([
+      '【今週の制度・法改正まとめ】9/28(月)〜10/4(日)',
+      '就労支援、放課後デイ情報局',
+    ]);
+  });
+
+  it('新着なしは「今週の新着はありません」で、注意書きは配信曜日で言い換える', () => {
+    const coverage: CoverageSummary = { total: 10, succeeded: 10, lastCollectedAtJst: '06:00' };
+    const text = formatEmptyMessage(WEEKLY, '2026-10-05', coverage);
+    expect(text).toContain('今週の新着はありません。');
+    expect(text).not.toContain('本日の新着はありません。');
+    expect(
+      text.endsWith(
+        '※毎週月曜にこの配信が届かない場合はシステム障害の可能性があります。管理者へご連絡ください。',
+      ),
+    ).toBe(true);
+  });
+
+  it('毎日配信のチャネルの文面は変わらない', () => {
+    expect(
+      formatDigestMessage(CHANNEL, DATE, [makeEntry()], 0).startsWith('【本日の制度・法改正まとめ】'),
+    ).toBe(true);
+  });
+});
+
+describe('formatUrgentMessage: 至急(AI を使わない定型文)', () => {
+  const WEEKLY: ChannelConfig = { ...CHANNEL, weeklyOn: 'mon', urgentWithinDays: 14 };
+
+  function notice(n: number, over: Partial<UrgentNotice> = {}): UrgentNotice {
+    return {
+      title: `就労選択支援の申請受付について ${n}`,
+      region: null,
+      deadline: '2026-10-15',
+      url: `https://www.mhlw.go.jp/stf/newpage_0000${n}.html`,
+      ...over,
+    };
+  }
+
+  it('見出し・タイトル・期限(曜日付き)・出典・注意書きの順に並ぶ', () => {
+    const { text, notices } = formatUrgentMessage(WEEKLY, '2026-10-06', [notice(1, { region: '大阪府' })], 0);
+    expect(text).toBe(
+      [
+        '【至急】期限が近い制度情報 10/6(火)',
+        '就労支援、放課後デイ情報局',
+        '',
+        '■1. 大阪府: 就労選択支援の申請受付について 1',
+        '　期限: 10/15(木)',
+        '　出典: https://www.mhlw.go.jp/stf/newpage_00001.html',
+        '',
+        URGENT_NOTICE,
+      ].join('\n'),
+    );
+    expect(notices).toHaveLength(1);
+  });
+
+  it('載せきれなかった件数を「ほかに N 件」として伝える', () => {
+    const { text } = formatUrgentMessage(WEEKLY, '2026-10-06', [notice(1)], 2);
+    expect(text).toContain('ほかに期限が近い情報が 2 件あります。');
+  });
+
+  it('長いタイトルは 80 文字で切る', () => {
+    const { text } = formatUrgentMessage(WEEKLY, '2026-10-06', [notice(1, { title: 'あ'.repeat(200) })], 0);
+    expect(text).toContain(`■1. ${'あ'.repeat(79)}…`);
+  });
+
+  it('文字数上限を超えるなら末尾から落とし、落とした分を「ほかに N 件」に足す', () => {
+    const tight: ChannelConfig = { ...WEEKLY, maxChars: 300 };
+    const many = [1, 2, 3, 4, 5].map((n) => notice(n));
+    const { text, notices } = formatUrgentMessage(tight, '2026-10-06', many, 0);
+    expect(codePoints(text)).toBeLessThanOrEqual(300);
+    expect(notices.length).toBeLessThan(5);
+    expect(text).toContain(`ほかに期限が近い情報が ${5 - notices.length} 件あります。`);
   });
 });

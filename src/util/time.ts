@@ -16,7 +16,10 @@
 export const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 
 /** 曜日の表記。getUTCDay() の 0=日曜 に対応する順序で並べる。 */
-const WEEKDAY_JA = ['日', '月', '火', '水', '木', '金', '土'] as const;
+export const WEEKDAY_JA = ['日', '月', '火', '水', '木', '金', '土'] as const;
+
+/** 週次配信の曜日指定(ChannelConfig.weeklyOn)の値。getUTCDay() の 0=日曜 に対応する順序。 */
+export const WEEKDAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
 
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 /** 'HH:MM'。1 桁時('7:30')も受け付ける。設定ミスで全滅させないための緩和。 */
@@ -109,6 +112,19 @@ export function formatJstHeaderDate(dateJst: string): string {
   // 曜日は「その暦日」の曜日。UTC で組めば実行環境の TZ に依存しない。
   const weekday = WEEKDAY_JA[new Date(Date.UTC(year, month - 1, day)).getUTCDay()] ?? '';
   return `${month}/${day}(${weekday})`;
+}
+
+/** 'YYYY-MM-DD' の曜日(0 = 日曜 … 6 = 土曜)。 */
+export function weekdayOf(dateJst: string): number {
+  if (!isValidDateString(dateJst)) {
+    throw new TypeError(`weekdayOf: 日付は 'YYYY-MM-DD' 形式の実在する日付で指定してください: ${dateJst}`);
+  }
+  return new Date(`${dateJst}T00:00:00.000Z`).getUTCDay();
+}
+
+/** 'YYYY-MM-DD' に日数を加算して 'YYYY-MM-DD' で返す。負数で減算。 */
+export function addDaysToDate(dateJst: string, days: number): string {
+  return addDays(`${dateJst}T00:00:00.000Z`, days).slice(0, 10);
 }
 
 /** ISO8601 文字列に日数を加算して ISO8601 文字列で返す。負数で減算。 */

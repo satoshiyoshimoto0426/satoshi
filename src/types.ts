@@ -37,7 +37,21 @@ export interface ChannelConfig {
   deliverAt: string;
   /** 承認モード(FR-15)。true なら `approved` の digest のみ配信する。 */
   requireApproval: boolean;
+  /**
+   * 週次配信の曜日。null なら毎日配信する。
+   * 指定すると、その曜日に直近 7 日分のまとめを配信し、他の曜日はまとめを作らない。
+   */
+  weeklyOn: Weekday | null;
+  /**
+   * 週次配信のチャネルで、まとめの日以外に「至急」を送る範囲(日)。
+   * 重要度が high で、期限がこの日数以内に迫っている新着だけを、AI を使わない定型文で翌朝に送る。
+   * null なら至急は送らない。weeklyOn が null(毎日配信)のときは指定できない。
+   */
+  urgentWithinDays: number | null;
 }
+
+/** 曜日。週次配信の指定に使う。 */
+export type Weekday = 'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat';
 
 export type SourceType = 'rss' | 'html' | 'egov';
 export type SourcePriority = 'high' | 'medium' | 'low';

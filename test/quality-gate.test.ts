@@ -34,6 +34,8 @@ const CHANNEL: ChannelConfig = {
   sendWhenEmpty: true,
   deliverAt: '07:30',
   requireApproval: false,
+  weeklyOn: null,
+  urgentWithinDays: null,
 };
 
 function silentLogger(): Logger {

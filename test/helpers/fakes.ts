@@ -567,6 +567,8 @@ export function makeChannel(overrides: Partial<ChannelConfig> = {}): ChannelConf
     sendWhenEmpty: true,
     deliverAt: '07:30',
     requireApproval: false,
+    weeklyOn: null,
+    urgentWithinDays: null,
     ...overrides,
   };
 }
