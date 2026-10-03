@@ -744,6 +744,8 @@ function channelOf(id: string): ChannelConfig {
     sendWhenEmpty: true,
     deliverAt: '07:30',
     requireApproval: false,
+    weeklyOn: null,
+    urgentWithinDays: null,
   };
 }
 
@@ -888,5 +890,40 @@ describe('loadRuntimeConfig のモデル指定', () => {
     const runtime = loadRuntimeConfig({ ANTHROPIC_MODEL: 'model-a', ANTHROPIC_CLASSIFY_MODEL: 'model-b' });
     expect(runtime.anthropicModel).toBe('model-a');
     expect(runtime.anthropicClassifyModel).toBe('model-b');
+  });
+});
+
+describe('週次配信の設定(weeklyOn / urgentWithinDays)', () => {
+  function channelsYaml(extra: string): string {
+    return `channels:
+  - id: welfare
+    name: 福祉
+    topics: 話題
+${extra}`;
+  }
+
+  it('既定は毎日配信(weeklyOn / urgentWithinDays とも null)', () => {
+    const dir = writeConfigDir(channelsYaml(''), { 'a.yaml': VALID_SOURCES });
+    const channel = loadConfig(dir, {}).channels[0];
+    expect(channel?.weeklyOn).toBeNull();
+    expect(channel?.urgentWithinDays).toBeNull();
+  });
+
+  it('曜日は sun〜sat の英小文字 3 文字だけ受け付ける', () => {
+    const dir = writeConfigDir(channelsYaml('    weeklyOn: monday\n'), { 'a.yaml': VALID_SOURCES });
+    expect(loadAndExpectError(dir)).toContain('weeklyOn');
+  });
+
+  it('urgentWithinDays は weeklyOn が無いと設定エラー(毎日配信では至急の意味が無い)', () => {
+    const dir = writeConfigDir(channelsYaml('    urgentWithinDays: 14\n'), { 'a.yaml': VALID_SOURCES });
+    expect(loadAndExpectError(dir)).toContain('urgentWithinDays');
+  });
+
+  it('本番設定は両チャネルとも月曜の週次配信 + 期限 14 日以内の至急', () => {
+    const config = loadConfig(REPO_CONFIG_DIR, { GCP_PROJECT_ID: 'test-project' });
+    for (const channel of config.channels) {
+      expect(channel.weeklyOn, channel.id).toBe('mon');
+      expect(channel.urgentWithinDays, channel.id).toBe(14);
+    }
   });
 });

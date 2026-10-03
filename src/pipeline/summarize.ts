@@ -33,8 +33,18 @@ import type {
   RunStatus,
   SourceConfig,
 } from '../types.js';
-import { fitToLimit, formatEmptyMessage } from '../line/format.js';
-import { addDays, digestWindow, isValidDateString, isoOf, toJstDateString } from '../util/time.js';
+import { fitToLimit, formatEmptyMessage, formatUrgentMessage } from '../line/format.js';
+import type { UrgentNotice } from '../line/format.js';
+import {
+  WEEKDAY_KEYS,
+  addDays,
+  addDaysToDate,
+  digestWindow,
+  isValidDateString,
+  isoOf,
+  toJstDateString,
+  weekdayOf,
+} from '../util/time.js';
 import { computeCoverage } from './coverage.js';
 import { applyQualityGate } from './quality-gate.js';
 
@@ -90,6 +100,37 @@ const REDELIVER_MIN_INTERVAL_DAYS = 7;
  *   そこで、まだ一度も配信していないアイテムはこの日数だけ候補に戻す。
  */
 export const CARRY_OVER_DAYS = 3;
+
+/** 週次配信のチャネルのまとめが対象にする日数。 */
+const WEEKLY_PERIOD_DAYS = 7;
+
+/**
+ * 至急の候補を探す日数(週次配信のチャネルで、まとめの日以外)。
+ * 至急は「翌朝」に送るものだが、巡回や配信が 1〜2 日止まっても取りこぼさないよう 3 日さかのぼる。
+ * 一度送ったものは digestedIn で除くので、さかのぼっても二重には送らない。
+ */
+const URGENT_LOOKBACK_DAYS = 3;
+
+/** 至急 1 通に載せる最大件数。至急は「数件だけ」だから読まれる。 */
+const URGENT_MAX_ITEMS = 5;
+
+/** このチャネルのまとめが何日分を対象にするか(毎日配信は 1、週次配信は 7)。 */
+export function digestPeriodDays(channel: ChannelConfig): number {
+  return channel.weeklyOn === null ? 1 : WEEKLY_PERIOD_DAYS;
+}
+
+/**
+ * その日にそのチャネルで作るものの種類。
+ * - daily: 毎日配信のチャネルの日次まとめ
+ * - weekly: 週次配信のチャネルの、配信曜日のまとめ(直近 7 日分)
+ * - urgent: 週次配信のチャネルの、配信曜日以外の日(至急だけを定型文で送る。無ければ送らない)
+ */
+export type DigestMode = 'daily' | 'weekly' | 'urgent';
+
+export function digestModeFor(channel: ChannelConfig, dateJst: string): DigestMode {
+  if (channel.weeklyOn === null) return 'daily';
+  return WEEKDAY_KEYS[weekdayOf(dateJst)] === channel.weeklyOn ? 'weekly' : 'urgent';
+}
 
 /**
  * 更新記事をさかのぼって探す日数。
@@ -380,19 +421,31 @@ export async function runSummarize(ctx: AppContext, opts: SummarizeOptions = {})
   }
 
   const channels = resolveChannels(ctx, opts.channelIds);
-  const window = digestWindow(dateJst, WINDOW_CUTOFF_JST);
+  // 当日 1 日分の窓。週次配信のチャネルはここから 7 日さかのぼる(channelWindow)。
+  const dayWindow = digestWindow(dateJst, WINDOW_CUTOFF_JST);
 
   // 持ち越しの起点。--since は「その日のまとめに載るはずだった分から」なので、
   // その日の窓の開始時刻(前日 07:00)を起点にする。対象日以降を指定しても意味が無い。
-  let carryFrom = addDays(window.from, -CARRY_OVER_DAYS);
+  let sinceFrom: string | null = null;
   if (opts.since !== undefined) {
     if (!isValidDateString(opts.since) || opts.since >= dateJst) {
       throw new ConfigError(
         `--since は対象日(${dateJst})より前の 'YYYY-MM-DD' 形式の実在する日付で指定してください: ${opts.since}`,
       );
     }
-    carryFrom = digestWindow(opts.since, WINDOW_CUTOFF_JST).from;
+    sinceFrom = digestWindow(opts.since, WINDOW_CUTOFF_JST).from;
   }
+  /** チャネルの対象ウィンドウと持ち越しの起点。週次配信なら 7 日分の窓になる。 */
+  const channelWindow = (
+    channel: ChannelConfig,
+  ): { window: { from: string; to: string }; carryFrom: string } => {
+    const window = { from: addDays(dayWindow.to, -digestPeriodDays(channel)), to: dayWindow.to };
+    const defaultCarry = addDays(window.from, -CARRY_OVER_DAYS);
+    // --since は持ち越しを「広げる」ためのもの。既定より狭めることはしない
+    //(週次の窓より新しい日付を渡されても、窓の手前 3 日の持ち越しは残す)。
+    const carryFrom = sinceFrom !== null && sinceFrom < defaultCarry ? sinceFrom : defaultCarry;
+    return { window, carryFrom };
+  };
   const sourceById = new Map(ctx.config.sources.map((source) => [source.id, source]));
 
   const counts = emptyCounts();
@@ -418,9 +471,7 @@ export async function runSummarize(ctx: AppContext, opts: SummarizeOptions = {})
   log.info('summarize を開始します', {
     date: dateJst,
     channels: channels.map((c) => c.id),
-    from: window.from,
-    to: window.to,
-    carryFrom,
+    since: opts.since ?? null,
     force: opts.force === true,
   });
 
@@ -447,6 +498,7 @@ export async function runSummarize(ctx: AppContext, opts: SummarizeOptions = {})
 
   for (const channel of channels) {
     const channelLog = log.child({ channelId: channel.id });
+    const { window, carryFrom } = channelWindow(channel);
     try {
       const outcome = await summarizeChannel({
         ctx,
@@ -534,6 +586,10 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
     return 'ok';
   }
 
+  const mode = digestModeFor(channel, dateJst);
+  if (mode === 'urgent') return summarizeUrgent(job, digestId, existing);
+  log.info('対象ウィンドウ', { mode, from: job.window.from, to: job.window.to, carryFrom: job.carryFrom });
+
   // --- 2〜3. 対象ウィンドウのアイテムを絞り込む -------------------------------
   // 新着(detectedAt がウィンドウ内)に加え、既知 URL の内容が更新されたもの
   // (updatedAt がウィンドウ内)も対象にする。detectedAt は初検知時刻のまま据え置かれるため、
@@ -567,7 +623,21 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
     return { ...item, digestedIn: item.digestedIn.filter((id) => id !== digestId) };
   };
 
-  const byId = new Map(freshItems.map((item) => [item.id, forgetOwnMark(item)]));
+  const byId = new Map<string, Item>();
+  let alreadyDelivered = 0;
+  for (const fresh of freshItems) {
+    const item = forgetOwnMark(fresh);
+    // 週次のまとめの窓は、至急(まとめの日以外の配信)や切り替え前の日次配信と重なる。
+    // このチャネルで一度届けた新着は二度載せない。日次配信では窓が重ならないので影響しない。
+    if (lastDigestedDate(item, channel.id) !== null) {
+      alreadyDelivered += 1;
+      continue;
+    }
+    byId.set(item.id, item);
+  }
+  if (alreadyDelivered > 0) {
+    log.info('このチャネルで配信済みの新着を除きました', { count: alreadyDelivered });
+  }
   let updatedPicked = 0;
   for (const touched of touchedItems) {
     const item = forgetOwnMark(touched);
@@ -661,7 +731,7 @@ async function summarizeChannel(job: ChannelJob): Promise<ChannelOutcome> {
         `対象日: ${dateJst}`,
         '分類が終わっていないため「本日の新着はありません」とは配信しません。',
         'collect を再実行して分類を完了させたうえで、summarize --force を実行してください。',
-        '--since で 5 日より前の分まで含めている場合は、collect に --classify-since で同じ日付を渡してください。',
+        '--since で持ち越し期間より前の分まで含めている場合は、collect に --classify-since で同じ日付を渡してください。',
       ]);
       return 'failed';
     }
@@ -851,4 +921,123 @@ async function putEmptyDigest(
     counts.skipped += 1;
     log.info('対象 0 件かつ sendWhenEmpty=false のため配信を見送ります', { digestId });
   }
+}
+
+/**
+ * 週次配信のチャネルの、配信曜日以外の日の処理(至急)。
+ *
+ * 週 1 回のまとめでは、申請期限や意見募集の締切が短い情報が間に合わない。そこで
+ * 「重要度 high かつ期限が urgentWithinDays 日以内」の新着だけを翌朝に送る。
+ * 文面は AI を使わない定型文(タイトル・期限・出典)なので、AI 費用はかからない。
+ * 該当が無い日は何も送らない(status='skipped')。「新着なし」も送らない。
+ */
+async function summarizeUrgent(
+  job: ChannelJob,
+  digestId: string,
+  existing: Digest | null,
+): Promise<ChannelOutcome> {
+  const { ctx, log, channel, dateJst, counts } = job;
+
+  // force の作り直しでは、この digest 自身の印を無かったことにして選び直す(summarizeChannel と同じ理由)。
+  const hadOwnMark = new Set<string>();
+  const forgetOwnMark = (item: Item): Item => {
+    if (!job.force || !item.digestedIn.includes(digestId)) return item;
+    hadOwnMark.add(item.id);
+    return { ...item, digestedIn: item.digestedIn.filter((id) => id !== digestId) };
+  };
+
+  const picked: Candidate[] = [];
+  if (channel.urgentWithinDays !== null) {
+    const window = { from: addDays(job.window.to, -URGENT_LOOKBACK_DAYS), to: job.window.to };
+    const pool = (await ctx.store.listItemsInWindow(window)).map(forgetOwnMark);
+    const hasNationalItem = pool.some((item) => item.region === null);
+    const lastDay = addDaysToDate(dateJst, channel.urgentWithinDays);
+
+    for (const item of pool) {
+      const c = item.classification;
+      if (c === null) continue; // 未分類は週次のまとめの担当(そちらで未分類の検査もする)
+      if (!c.channels.includes(channel.id)) continue;
+      if (c.relevance < channel.relevanceThreshold) continue;
+      if (c.importance !== 'high') continue;
+      // 期限が本文に明記されていて、今日から urgentWithinDays 日以内のものだけ。過ぎたものは送らない。
+      if (c.deadline === null || c.deadline < dateJst || c.deadline > lastDay) continue;
+      // このチャネルで一度届けたもの(前日までの至急など)は送らない。
+      if (lastDigestedDate(item, channel.id) !== null) continue;
+      if (c.isDuplicateOfNational && item.region !== null && hasNationalItem) continue;
+      picked.push({ item, classification: c });
+    }
+  }
+
+  // 期限が近い順。同じ期限なら関連度の高い順、最後は id で並びを決定的にする。
+  picked.sort(
+    (a, b) =>
+      (a.classification.deadline ?? '').localeCompare(b.classification.deadline ?? '') ||
+      b.classification.relevance - a.classification.relevance ||
+      (a.item.id < b.item.id ? -1 : 1),
+  );
+  const shown = picked.slice(0, URGENT_MAX_ITEMS);
+  const notices: UrgentNotice[] = shown.map(({ item, classification }) => ({
+    title: item.title,
+    region: item.region,
+    deadline: classification.deadline ?? dateJst,
+    url: item.canonicalUrl,
+  }));
+  const formatted = formatUrgentMessage(channel, dateJst, notices, picked.length - shown.length);
+  const sent = shown.slice(0, formatted.notices.length);
+
+  const coverage = await job.getCoverage();
+  const entries: DigestEntry[] = sent.map(({ item, classification }) => ({
+    itemId: item.id,
+    headline: item.title,
+    summary: '',
+    affected: item.region ?? '',
+    dateNote: `期限 ${classification.deadline ?? ''}`,
+    sourceUrl: item.canonicalUrl,
+    importance: 'high',
+  }));
+
+  // 本文に載ったものだけを「配信済み」にする(putDigest より先。理由は summarizeChannel の 8)。
+  const usedItemIds = entries.map((entry) => entry.itemId);
+  if (usedItemIds.length > 0) {
+    await ctx.store.markItemsDigested(usedItemIds, digestId);
+  }
+  if (job.force) {
+    const used = new Set(usedItemIds);
+    const dropped = [...hadOwnMark].filter((id) => !used.has(id));
+    if (dropped.length > 0) await ctx.store.unmarkItemsDigested(dropped, digestId);
+  }
+
+  const send = entries.length > 0;
+  const digest = buildDigest(ctx, channel, dateJst, digestId, existing, {
+    entries,
+    excluded: [],
+    omittedCount: picked.length - entries.length,
+    isEmpty: !send,
+    coverage,
+    messageText: send ? formatted.text : '',
+    status: send ? 'generated' : 'skipped',
+    // AI は呼んでいない(定型文)。監査上それが分かるよう prompt / rawResponse は空にする(FR-16)。
+    model: ctx.config.runtime.anthropicModel,
+    prompt: '',
+    rawResponse: '',
+    usage: null,
+  });
+  await ctx.store.putDigest(digest);
+
+  if (send) {
+    counts.digestsGenerated += 1;
+    log.info('至急の digest を生成しました', {
+      digestId,
+      entries: entries.length,
+      omittedCount: digest.omittedCount,
+    });
+  } else {
+    counts.skipped += 1;
+    log.info('週次配信の日ではなく、至急も無いため配信しません', {
+      digestId,
+      weeklyOn: channel.weeklyOn,
+      urgentWithinDays: channel.urgentWithinDays,
+    });
+  }
+  return 'ok';
 }

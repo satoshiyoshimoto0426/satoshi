@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   JST_OFFSET_MS,
   addDays,
+  addDaysToDate,
   digestWindow,
   formatJstHeaderDate,
   isValidDateString,
@@ -17,6 +18,7 @@ import {
   jstWallClockToUtc,
   toJstDateString,
   toJstTimeString,
+  weekdayOf,
 } from '../src/util/time.js';
 
 /** UTC・西半球・JST の 3 つ。JST を含めるのは「たまたま合っていた」を防ぐため。 */
@@ -275,5 +277,24 @@ describe('isValidDateString', () => {
       expect(isValidDateString('2026-09-12T00:00:00Z')).toBe(false);
       expect(isValidDateString('')).toBe(false);
     });
+  });
+});
+
+describe('weekdayOf / addDaysToDate(週次配信の曜日判定)', () => {
+  it('YYYY-MM-DD の曜日を 0=日曜 … 6=土曜 で返す(実行環境のタイムゾーンに依らない)', () => {
+    forEachTimeZone(() => {
+      expect(weekdayOf('2026-10-04')).toBe(0); // 日曜
+      expect(weekdayOf('2026-10-05')).toBe(1); // 月曜
+      expect(weekdayOf('2026-10-03')).toBe(6); // 土曜
+    });
+  });
+
+  it('不正な日付は例外', () => {
+    expect(() => weekdayOf('2026-02-30')).toThrow(TypeError);
+  });
+
+  it('日付に日数を足し引きする(月・年をまたぐ)', () => {
+    expect(addDaysToDate('2026-10-05', -7)).toBe('2026-09-28');
+    expect(addDaysToDate('2026-12-25', 14)).toBe('2027-01-08');
   });
 });

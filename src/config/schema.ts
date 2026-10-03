@@ -108,9 +108,28 @@ export const ChannelSchema = z
       .regex(HHMM_PATTERN, 'deliverAt は "HH:MM" 形式で指定してください(例: "07:30")')
       .default('07:30'),
     requireApproval: z.boolean().default(false),
+    // 週次配信(配信回数を減らして AI と LINE の費用を抑える)。null なら毎日配信。
+    weeklyOn: z.enum(['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']).nullable().default(null),
+    urgentWithinDays: z
+      .number()
+      .int('urgentWithinDays は整数(日数)で指定してください')
+      .min(1, 'urgentWithinDays は 1 以上で指定してください')
+      .max(60, 'urgentWithinDays は 60 以下で指定してください')
+      .nullable()
+      .default(null),
   })
   .strict()
   .superRefine((channel, ctx) => {
+    // 至急は「週次のまとめを待てないもの」を送る仕組み。毎日配信なら翌朝のまとめに載るので意味が無く、
+    // 指定されていると「至急が届くはず」と誤解させるため設定ミスとして落とす。
+    if (channel.urgentWithinDays !== null && channel.weeklyOn === null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['urgentWithinDays'],
+        input: channel.urgentWithinDays,
+        message: 'urgentWithinDays は weeklyOn(週次配信の曜日)を指定したチャネルでだけ使えます',
+      });
+    }
     // minItems > maxItems は「絞り込みが成立しない」設定ミス。単体では検出できないので横断で見る。
     if (channel.minItems > channel.maxItems) {
       ctx.addIssue({
