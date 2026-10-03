@@ -103,7 +103,7 @@ function readNotifyWebhookKind(env: NodeJS.ProcessEnv): 'slack' | 'discord' | nu
  * 既定値は詳細設計書 §6.1 のレート制限・上限値に合わせてある。
  */
 export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
-  const anthropicModel = readString(env, 'ANTHROPIC_MODEL', 'claude-opus-5');
+  const anthropicModel = readString(env, 'ANTHROPIC_MODEL', 'claude-opus-5-5');
   const runtime: RuntimeConfig = {
     gcpProjectId: readNullableString(env, 'GCP_PROJECT_ID'),
     firestoreDatabaseId: readString(env, 'FIRESTORE_DATABASE_ID', '(default)'),
